@@ -50,7 +50,7 @@ function setProgress(percent) {
     
     function updateStickyHeader() {
         const scrollY = window.pageYOffset || document.documentElement.scrollTop;
-        const showSticky = scrollY > 100;
+        const showSticky = scrollY > 200;
         
         if(showSticky){
             stickyHeader.classList.add('is-visible');
@@ -77,7 +77,6 @@ function setProgress(percent) {
     updateStickyHeader();
 })();
 
-// Render download history
 function renderHistory() {
     // Clear expired items (older than 24 hours)
     const now = Date.now();

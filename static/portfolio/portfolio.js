@@ -1,11 +1,321 @@
 let selectedLanguage = 'en';
 
-// Cursor with Snow Trail
+// Game state tracking
+let gameActive = false;
+let currentGameType = null;
+let snakeGameRunning = false;
+let tttGameActive = false;
+let memoryGameActive = false;
+
+// Game initialization tracking
+let snakeInitialized = false;
+let tttInitialized = false;
+let memInitialized = false;
+
+// Snake game variables
+let currentSnakeDX = 0, currentSnakeDY = 0;
+let cursorVisible = true;
+let cursorTimeout;
+
+
+// ============================================
+// MEMORY LEAK PREVENTION - ADD THESE VARIABLES
+// ============================================
+
+// Animation intervals for cleanup
+let matrixInterval;
+let loadingAnimationId;
+let mainAnimationId;
+let connectionLines = null;
+
+// Game cleanup trackers
+let currentGameControls = null;
+let currentGameLoop = null;
+let currentTTTControls = null;
+let currentMemoryControls = null;
+let currentMemoryTimer = null;
+
+// Three.js cleanup
+let threeSceneObjects = [];
+
+// ============================================
+// CURSOR MANAGEMENT
+// ============================================
+
+function showCursor() {
+  if (!cursorVisible) {
+    customCursor.style.opacity = '1';
+    cursorDot.style.opacity = '1';
+    cursorVisible = true;
+  }
+  clearTimeout(cursorTimeout);
+}
+
+function hideCursor() {
+  cursorTimeout = setTimeout(() => {
+    customCursor.style.opacity = '0';
+    cursorDot.style.opacity = '0';
+    cursorVisible = false;
+  }); 
+}
+
+function forceHideCursor() {
+  clearTimeout(cursorTimeout);
+  customCursor.style.opacity = '0';
+  cursorDot.style.opacity = '0';
+  cursorVisible = false;
+}
+
+hideCursor();
+
+// Hide cursor after any button click or interaction
+document.addEventListener('click', () => {
+  setTimeout(hideCursor, 500);
+});
+
+// Specifically for your game control buttons
+document.addEventListener('click', (e) => {
+  if (e.target.classList.contains('game-control-btn') || 
+      e.target.classList.contains('cmd-button') ||
+      e.target.classList.contains('nav-arrow') ||
+      e.target.classList.contains('minimap-cell')) {
+    setTimeout(hideCursor, 300);
+  }
+});
+
+// Also hide cursor when tapping anywhere on mobile
+document.addEventListener('touchend', (e) => {
+  if (e.touches && e.touches.length === 0) {
+    setTimeout(hideCursor, 500);
+  }
+});
+
+// ============================================
+// HOVER EFFECTS
+// ============================================
+
+function addButtonHoverEffect(button) {
+  if (!('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
+    button.style.setProperty('background', '#0f0', 'important');
+    button.style.setProperty('color', '#000', 'important');
+    button.style.setProperty('transform', 'scale(1.05)', 'important');
+    button.style.setProperty('box-shadow', '0 0 15px #0f0', 'important');
+    
+    setTimeout(() => {
+      button.style.removeProperty('background');
+      button.style.removeProperty('color');
+      button.style.removeProperty('transform');
+      button.style.removeProperty('box-shadow');
+    }, 150);
+  }
+}
+
+// Apply to all interactive elements
+document.addEventListener('click', (e) => {
+  if (e.target.matches('.game-control-btn, .cmd-button, .nav-arrow, .minimap-cell:not(.empty), .terminal-btn, .lang-btn, .project-menu-btn, .cert-card')) {
+    addButtonHoverEffect(e.target);
+  }
+});
+
+// Also for touch events
+document.addEventListener('touchend', (e) => {
+  const touch = e.changedTouches[0];
+  const element = document.elementFromPoint(touch.clientX, touch.clientY);
+  
+  if (element && element.matches('.game-control-btn, .cmd-button, .nav-arrow, .minimap-cell:not(.empty), .terminal-btn, .lang-btn, .project-menu-btn, .cert-card')) {
+    addButtonHoverEffect(element);
+  }
+});
+
+// ============================================
+// TOUCH HANDLING
+// ============================================
+
+document.addEventListener('touchstart', handleTouch);
+document.addEventListener('touchmove', handleTouch);
+document.addEventListener('touchend', handleTouch);
+
+function handleTouch(e) {
+  showCursor();
+  if (e.type === 'touchend') {
+    return;
+  }
+  const touch = e.touches[0];
+  
+  // Update cursor position
+  customCursor.style.left = touch.clientX + 'px';
+  customCursor.style.top = touch.clientY + 'px';
+  cursorDot.style.left = touch.clientX + 'px';
+  cursorDot.style.top = touch.clientY + 'px';
+  
+  // Create snow particles for touch movement
+  const distance = Math.sqrt(Math.pow(touch.clientX - lastX, 2) + Math.pow(touch.clientY - lastY, 2));
+  if (distance > 10) {
+    createSnowParticle(touch.clientX, touch.clientY);
+    lastX = touch.clientX;
+    lastY = touch.clientY;
+  }
+}
+
+// ============================================
+// MOBILE GAME BUTTONS
+// ============================================
+
+function setupMobileGameButtons() {
+  // Snake game buttons
+  const snakeEnterBtn = document.getElementById('snake-enter-btn');
+  const snakeRestartBtn = document.getElementById('snake-restart-btn');
+  
+  if (snakeEnterBtn) {
+    snakeEnterBtn.addEventListener('click', () => {
+      if (!snakeInitialized) {
+        startSnakeGame();
+      } else if (gameKeyboardActive && currentGameType === 'snake') {
+        const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape' });
+        document.dispatchEvent(escEvent);
+      } else {
+        startSnakeGame();
+      }
+    });
+  }
+
+  if (snakeRestartBtn) {
+    snakeRestartBtn.addEventListener('click', () => {
+      if (gameKeyboardActive && currentGameType === 'snake') {
+        const rEvent = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', keyCode: 82 });
+        document.dispatchEvent(rEvent);
+      }
+    });
+  }
+
+  // TicTacToe buttons
+  const tttEnterBtn = document.getElementById('ttt-enter-btn');
+  const tttRestartBtn = document.getElementById('ttt-restart-btn');
+  
+  if (tttEnterBtn) {
+    tttEnterBtn.addEventListener('click', () => {
+      if (!tttInitialized) {
+        startTicTacToe();
+      } else if (gameKeyboardActive && currentGameType === 'tictactoe') {
+        const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27 });
+        document.dispatchEvent(escEvent);
+      } else {
+        startTicTacToe();
+      }
+    });
+  }
+  
+  if (tttRestartBtn) {
+    tttRestartBtn.addEventListener('click', () => {
+      if (gameKeyboardActive && currentGameType === 'tictactoe') {
+        const rEvent = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', keyCode: 82 });
+        document.dispatchEvent(rEvent);
+      }
+    });
+  }
+
+  // Memory game buttons
+  const memoryEnterBtn = document.getElementById('memory-enter-btn');
+  const memoryRestartBtn = document.getElementById('memory-restart-btn');
+  
+  if (memoryEnterBtn) {
+    memoryEnterBtn.addEventListener('click', () => {
+      if (!memInitialized) {
+        startMemoryGame();
+      } else if (gameKeyboardActive && currentGameType === 'memory') {
+        const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27 });
+        document.dispatchEvent(escEvent);
+      } else {
+        startMemoryGame();
+      }
+    });
+  }
+  
+  if (memoryRestartBtn) {
+    memoryRestartBtn.addEventListener('click', () => {
+      if (gameKeyboardActive && currentGameType === 'memory') {
+        const rEvent = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', keyCode: 82 });
+        document.dispatchEvent(rEvent);
+      }
+    });
+  }
+}
+
+function updateMobileGameButtons() {
+  // Snake buttons
+  const snakeEnterBtn = document.getElementById('snake-enter-btn');
+  if (snakeEnterBtn) {
+    snakeEnterBtn.textContent = (gameKeyboardActive && currentGameType === 'snake') ? '⏹️ ESC' : '🎮 ENTER';
+  }
+
+  // TicTacToe buttons
+  const tttEnterBtn = document.getElementById('ttt-enter-btn');
+  if (tttEnterBtn) {
+    tttEnterBtn.textContent = (gameKeyboardActive && currentGameType === 'tictactoe') ? '⏹️ ESC' : '🎮 ENTER';
+  }
+
+  // Memory buttons
+  const memoryEnterBtn = document.getElementById('memory-enter-btn');
+  if (memoryEnterBtn) {
+    memoryEnterBtn.textContent = (gameKeyboardActive && currentGameType === 'memory') ? '⏹️ ESC' : '🎮 ENTER';
+  }
+}
+
+// ============================================
+// GAME MANAGEMENT
+// ============================================
+
+function exitGame() {
+  gameActive = false;
+  currentGameType = null;
+  gameKeyboardActive = false;
+  snakeGameRunning = false;
+  tttGameActive = false;
+  memoryGameActive = false;
+  
+  // Clean up game-specific resources
+  if (currentGameLoop) {
+    clearTimeout(currentGameLoop);
+    currentGameLoop = null;
+  }
+  
+  if (currentGameControls) {
+    document.removeEventListener('keydown', currentGameControls);
+    currentGameControls = null;
+  }
+  
+  if (currentTTTControls) {
+    document.removeEventListener('keydown', currentTTTControls);
+    currentTTTControls = null;
+  }
+  
+  if (currentMemoryControls) {
+    document.removeEventListener('keydown', currentMemoryControls);
+    currentMemoryControls = null;
+  }
+  
+  if (currentMemoryTimer) {
+    clearInterval(currentMemoryTimer);
+    currentMemoryTimer = null;
+  }
+
+  if (currentGameType === 'snake') {
+    snakeInitialized = false;
+  }
+
+  updateMobileGameButtons();
+}
+
+// ============================================
+// CURSOR WITH SNOW TRAIL
+// ============================================
+
 const customCursor = document.querySelector('.custom-cursor');
 const cursorDot = document.querySelector('.cursor-dot');
 let lastX = 0, lastY = 0, snowParticles = [];
 
 document.addEventListener('mousemove', (e) => {
+  showCursor();
   customCursor.style.left = e.clientX + 'px';
   customCursor.style.top = e.clientY + 'px';
   cursorDot.style.left = e.clientX + 'px';
@@ -19,6 +329,34 @@ document.addEventListener('mousemove', (e) => {
   }
 });
 
+function createSnowParticle(x, y) {
+  // ENFORCE LIMIT BEFORE CREATING
+  while (snowParticles.length >= 20) {
+    const old = snowParticles.shift();
+    if (old?.parentNode) old.parentNode.removeChild(old);
+  }
+  
+  const particle = document.createElement('div');
+  particle.className = 'snow-particle';
+  particle.style.left = x + 'px';
+  particle.style.top = y + 'px';
+  particle.style.width = (Math.random() * 3 + 2) + 'px';
+  particle.style.height = particle.style.width;
+  document.body.appendChild(particle);
+  snowParticles.push(particle);
+  
+  setTimeout(() => {
+    if (particle?.parentNode) {
+      particle.parentNode.removeChild(particle);
+      snowParticles = snowParticles.filter(p => p !== particle);
+    }
+  }, 600); // Reduced lifetime
+}
+
+// ============================================
+// PROJECT MANAGEMENT
+// ============================================
+
 function showProjectSection(sectionId) {
   const section = document.getElementById(sectionId);
   if (!section) return;
@@ -30,28 +368,10 @@ function showProjectSection(sectionId) {
   section.style.display = 'block';
 }
 
+// ============================================
+// LANGUAGE SELECTION
+// ============================================
 
-
-
-function createSnowParticle(x, y) {
-  const particle = document.createElement('div');
-  particle.className = 'snow-particle';
-  particle.style.left = x + 'px';
-  particle.style.top = y + 'px';
-  particle.style.width = (Math.random() * 3 + 2) + 'px';
-  particle.style.height = particle.style.width;
-  document.body.appendChild(particle);
-  snowParticles.push(particle);
-  setTimeout(() => {
-    particle.remove();
-    snowParticles = snowParticles.filter(p => p !== particle);
-  }, 800);
-  if (snowParticles.length > 30) {
-    snowParticles.shift().remove();
-  }
-}
-
-// Language Selection
 function selectLanguage(lang) {
   selectedLanguage = lang;
   document.getElementById('lang-selector').style.display = 'none';
@@ -64,15 +384,36 @@ function selectLanguage(lang) {
     if(progress >= 100) {
       progress = 100;
       clearInterval(interval);
-      setTimeout(() => document.getElementById('loading-screen').classList.add('hidden'), 500);
+      setTimeout(() => {
+        document.getElementById('loading-screen').classList.add('hidden');
+        
+        // CLEANUP LOADING ANIMATION
+        if (loadingAnimationId) {
+          cancelAnimationFrame(loadingAnimationId);
+          loadingAnimationId = null;
+        }
+        
+        // Dispose loading scene
+        if (particlesGeometry) {
+          particlesGeometry.dispose();
+        }
+        if (particlesMaterial) {
+          particlesMaterial.dispose();
+        }
+        if (loadingRenderer) {
+          loadingRenderer.dispose();
+          loadingRenderer.forceContextLoss();
+        }
+      }, 500);
     }
     document.getElementById('progress-bar').style.width = progress + '%';
   }, 150);
 }
 
 // ============================================
-// NEW 3D LOADING EFFECT - PARTICLES + WAVES
+// 3D LOADING EFFECT - PARTICLES + WAVES
 // ============================================
+
 const loadingCanvas = document.getElementById('loading-canvas');
 const loadingScene = new THREE.Scene();
 const loadingCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -121,7 +462,7 @@ loadingCamera.position.z = 30;
 
 function animateLoading() {
   if(!document.getElementById('loading-screen').classList.contains('hidden')) {
-    requestAnimationFrame(animateLoading);
+    loadingAnimationId = requestAnimationFrame(animateLoading);
     
     const positions = particlesGeometry.attributes.position.array;
     for(let i = 0; i < particlesCount * 3; i += 3) {
@@ -144,8 +485,9 @@ function animateLoading() {
 animateLoading();
 
 // ============================================
-// MATRIX RAIN BACKGROUND
+// MATRIX RAIN BACKGROUND - WITH CLEANUP
 // ============================================
+
 const matrixCanvas = document.getElementById('matrix-canvas');
 const matrixCtx = matrixCanvas.getContext('2d');
 matrixCanvas.width = window.innerWidth;
@@ -161,6 +503,17 @@ for(let i = 0; i < columns; i++) {
 }
 
 function drawMatrix() {
+    if (drops[0] % 10 === 0) {
+    matrixCtx.clearRect(0, 0, matrixCanvas.width, matrixCanvas.height);
+    matrixCtx.fillStyle = '#000';
+    matrixCtx.fillRect(0, 0, matrixCanvas.width, matrixCanvas.height);
+  } else {
+    matrixCtx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+    matrixCtx.fillRect(0, 0, matrixCanvas.width, matrixCanvas.height);
+  }
+  
+
+
   matrixCtx.fillStyle = 'rgba(0, 0, 0, 0.05)';
   matrixCtx.fillRect(0, 0, matrixCanvas.width, matrixCanvas.height);
   
@@ -178,11 +531,28 @@ function drawMatrix() {
   }
 }
 
-setInterval(drawMatrix, 50);
+// Start matrix rain with cleanup capability
+function startMatrixRain() {
+  if (matrixInterval) {
+    clearInterval(matrixInterval);
+  }
+  matrixInterval = setInterval(drawMatrix, 50);
+}
+
+function stopMatrixRain() {
+  if (matrixInterval) {
+    clearInterval(matrixInterval);
+    matrixInterval = null;
+  }
+}
+
+// Start the matrix rain
+startMatrixRain();
 
 // ============================================
 // MAIN 3D BACKGROUND - PARTICLES + NETWORK
 // ============================================
+
 const canvas = document.getElementById('canvas-3d');
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -216,9 +586,11 @@ const mainParticlesMaterial = new THREE.PointsMaterial({
 
 const mainParticlesMesh = new THREE.Points(mainParticlesGeometry, mainParticlesMaterial);
 scene.add(mainParticlesMesh);
+threeSceneObjects.push(mainParticlesMesh);
 
 // Network connections
 const maxDistance = 15;
+
 function updateConnections() {
   const positions = mainParticlesGeometry.attributes.position.array;
   const linePositions = [];
@@ -240,19 +612,26 @@ function updateConnections() {
     }
   }
   
-  const linesGeo = new THREE.BufferGeometry();
-  linesGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
-  
-  const linesMat = new THREE.LineBasicMaterial({
-    color: 0x00ff00,
-    transparent: true,
-    opacity: 0.15
-  });
-  
-  scene.remove(scene.children.find(child => child.type === 'LineSegments'));
-  const lines = new THREE.LineSegments(linesGeo, linesMat);
-  scene.add(lines);
+  // REUSE existing lines instead of creating new ones
+  if (connectionLines) {
+    connectionLines.geometry.dispose(); // Dispose old geometry
+    connectionLines.geometry = new THREE.BufferGeometry();
+    connectionLines.geometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+  } else {
+    const linesGeo = new THREE.BufferGeometry();
+    linesGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+    
+    const linesMat = new THREE.LineBasicMaterial({
+      color: 0x00ff00,
+      transparent: true,
+      opacity: 0.15
+    });
+    
+    connectionLines = new THREE.LineSegments(linesGeo, linesMat);
+    scene.add(connectionLines);
+  }
 }
+
 
 camera.position.z = 40;
 
@@ -264,8 +643,25 @@ document.addEventListener('mousemove', (e) => {
 
 let frameCount = 0;
 function animate() {
-  requestAnimationFrame(animate);
+  mainAnimationId = requestAnimationFrame(animate);
   
+    frameCount++;
+  
+  // Only update GPU buffer every 3 frames instead of every frame
+  if (frameCount % 3 === 0) {
+    const positions = mainParticlesGeometry.attributes.position.array;
+    for(let i = 0; i < mainParticlesCount * 3; i += 3) {
+      positions[i] += mainVelocities[i];
+      positions[i + 1] += mainVelocities[i + 1];
+      positions[i + 2] += mainVelocities[i + 2];
+      
+      if(Math.abs(positions[i]) > 40) mainVelocities[i] *= -1;
+      if(Math.abs(positions[i + 1]) > 40) mainVelocities[i + 1] *= -1;
+      if(Math.abs(positions[i + 2]) > 40) mainVelocities[i + 2] *= -1;
+    }
+    mainParticlesGeometry.attributes.position.needsUpdate = true;
+  }
+
   const positions = mainParticlesGeometry.attributes.position.array;
   for(let i = 0; i < mainParticlesCount * 3; i += 3) {
     positions[i] += mainVelocities[i];
@@ -294,7 +690,10 @@ function animate() {
 }
 animate();
 
-// Burmese text
+// ============================================
+// BURMESE TEXT ANIMATION
+// ============================================
+
 const burmeseLayer = document.getElementById('burmese-layer');
 const burmeseWords = ['မင်္ဂလာပါ', 'ကျေးဇူးတင်ပါတယ်', 'AMMZ', 'Developer', 'Myanmar'];
 for(let i = 0; i < 10; i++) {
@@ -306,7 +705,10 @@ for(let i = 0; i < 10; i++) {
   burmeseLayer.appendChild(word);
 }
 
-// Navigation
+// ============================================
+// NAVIGATION SYSTEM
+// ============================================
+
 let currentX = 0, currentY = 0, gameKeyboardActive = false;
 const container = document.getElementById('sections-container');
 const navArrows = document.querySelectorAll('.nav-arrow[data-direction]');
@@ -315,18 +717,84 @@ function updatePosition() {
   container.style.transform = `translate(${-currentX * 100}vw, ${-currentY * 100}vh)`;
 }
 
+// Game controls via nav buttons
+function handleGameControl(direction) {
+  if (!gameActive) return;
+  
+  switch(currentGameType) {
+    case 'snake':
+      handleSnakeControl(direction);
+      break;
+    case 'tictactoe':
+      handleTicTacToeControl(direction);
+      break;
+    case 'memory':
+      handleMemoryControl(direction);
+      break;
+  }
+}
+
+// Snake game controls
+function handleSnakeControl(direction) {
+  if (!snakeGameRunning) return;
+  
+  switch(direction) {
+    case 'up':
+      if (currentSnakeDY === 0) { currentSnakeDX = 0; currentSnakeDY = -1; }
+      break;
+    case 'down':
+      if (currentSnakeDY === 0) { currentSnakeDX = 0; currentSnakeDY = 1; }
+      break;
+    case 'left':
+      if (currentSnakeDX === 0) { currentSnakeDX = -1; currentSnakeDY = 0; }
+      break;
+    case 'right':
+      if (currentSnakeDX === 0) { currentSnakeDX = 1; currentSnakeDY = 0; }
+      break;
+    case 'home':
+      exitGame();
+      break;
+  }
+}
+
+// TicTacToe game controls
+function handleTicTacToeControl(direction) {
+  if (!tttGameActive) return;
+  
+  switch(direction) {
+    case 'home':
+      exitGame();
+      break;
+  }
+}
+
+// Memory game controls  
+function handleMemoryControl(direction) {
+  if (!memoryGameActive) return;
+  
+  switch(direction) {
+    case 'home':
+      exitGame();
+      break;
+  }
+}
+
+// Main navigation function
 function navigate(direction) {
+  if (gameActive) {
+    handleGameControl(direction);
+    return;
+  }
+  
   if (gameKeyboardActive) return;
   
-  // ONLY block UP/DOWN on project 1 and 2 (x=1,2)
-  // Block completely - no navigation at all
-  if ((currentX === 1 || currentX === 2) && currentY === 1) {
+  // ONLY block UP/DOWN on project 1 and 2 (x=1,2 at y=1) and certificates (x=1 at y=0)
+  if ((currentX === 1 && currentY === 1) || (currentX === 2 && currentY === 1) || (currentX === 1 && currentY === 0)) {
     if (direction === 'up' || direction === 'down') {
-      return; // Don't navigate
+      return;
     }
   }
   
-  // All other logic NORMAL - unchanged
   if (direction === 'up') {
     if (currentY === 0 && currentX === 0) { currentY = -1; currentX = 0; }
     else if (currentY === -1 || currentY === 1) { currentY = 0; currentX = 0; }
@@ -372,14 +840,10 @@ function navigate(direction) {
 
   updatePosition();
   updateMinimap(currentX, currentY);
-  setTimeout(() => {
-    if (currentX === -1 && currentY === 1) initSnakeGame();
-    if (currentX === -2 && currentY === 1) initTicTacToe();
-    if (currentX === -3 && currentY === 1) initMemoryGame();
-  }, 100);
+  if (currentX === -1 && currentY === 1) initSnakeGame();
+  if (currentX === -2 && currentY === 1) initTicTacToe();
+  if (currentX === -3 && currentY === 1) initMemoryGame();
 }
-
-
 
 navArrows.forEach(arrow => {
   arrow.addEventListener('click', () => navigate(arrow.getAttribute('data-direction')));
@@ -398,31 +862,39 @@ window.addEventListener('wheel', (e) => {
   }, 100);
 }, { passive: false });
 
+// Keyboard event listener
 document.addEventListener('keydown', (e) => {
-  if (gameKeyboardActive) return;
-  
-  // Disable UP/DOWN on mobile projects ONLY
-  const isProject1 = Math.abs(currentX - 1) < 0.1 && Math.abs(currentY - 1) < 0.1;
-  const isProject2 = Math.abs(currentX - 2) < 0.1 && Math.abs(currentY - 1) < 0.1;
-  const isProject3 = Math.abs(currentX - 3) < 0.1 && Math.abs(currentY - 1) < 0.1;
-  const isProjectSection = isProject1 || isProject2 || isProject3;
-  const isMobile = window.innerWidth < 1024;
-  
-  // Block UP/DOWN on mobile projects
-  if (isMobile && isProjectSection) {
-    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-      e.preventDefault();
-      return; // Don't navigate
+  if (gameActive) {
+    switch(e.key) {
+      case 'ArrowUp': e.preventDefault(); handleGameControl('up'); break;
+      case 'ArrowDown': e.preventDefault(); handleGameControl('down'); break;
+      case 'ArrowLeft': e.preventDefault(); handleGameControl('left'); break;
+      case 'ArrowRight': e.preventDefault(); handleGameControl('right'); break;
+      case 'Escape': e.preventDefault(); exitGame(); break;
+      case 'Enter': e.preventDefault(); break;
     }
+  } else {
+    if (gameKeyboardActive) return;
+    
+    const isProject1 = Math.abs(currentX - 1) < 0.1 && Math.abs(currentY - 1) < 0.1;
+    const isProject2 = Math.abs(currentX - 2) < 0.1 && Math.abs(currentY - 1) < 0.1;
+    const isProject3 = Math.abs(currentX - 3) < 0.1 && Math.abs(currentY - 1) < 0.1;
+    const isProjectSection = isProject1 || isProject2 || isProject3;
+    const isMobile = window.innerWidth < 1024;
+    
+    if (isMobile && isProjectSection) {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        return;
+      }
+    }
+    
+    if (e.key === 'ArrowUp') { e.preventDefault(); navigate('up'); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); navigate('down'); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); navigate('left'); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); navigate('right'); }
   }
-  
-  // Normal navigation
-  if (e.key === 'ArrowUp') { e.preventDefault(); navigate('up'); }
-  if (e.key === 'ArrowDown') { e.preventDefault(); navigate('down'); }
-  if (e.key === 'ArrowLeft') { e.preventDefault(); navigate('left'); }
-  if (e.key === 'ArrowRight') { e.preventDefault(); navigate('right'); }
 });
-
 
 let touchStartX = 0, touchStartY = 0;
 document.addEventListener('touchstart', (e) => {
@@ -443,7 +915,12 @@ document.addEventListener('touchend', (e) => {
     if (diffY > 50) navigate('down');
     else if (diffY < -50) navigate('up');
   }
+  hideCursor();
 });
+
+// ============================================
+// CONTENT MANAGEMENT
+// ============================================
 
 function showAbout() {
   document.getElementById('about-content').style.display = 'block';
@@ -475,31 +952,69 @@ document.querySelectorAll('.minimap-cell[data-pos], .game-label[data-pos]').forE
       updatePosition();
       updateMinimap(currentX, currentY);
       
-      setTimeout(() => {
-        if (currentX === -1 && currentY === 1) initSnakeGame();
-        if (currentX === -2 && currentY === 1) initTicTacToe();
-        if (currentX === -3 && currentY === 1) initMemoryGame();
-      }, 100);
+      if (currentX === -1 && currentY === 1) initSnakeGame();
+      if (currentX === -2 && currentY === 1) initTicTacToe();
+      if (currentX === -3 && currentY === 1) initMemoryGame();
     }
   });
 });
 
-updatePosition();
-updateMinimap(0, 0);
-
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  loadingCamera.aspect = window.innerWidth / window.innerHeight;
-  loadingCamera.updateProjectionMatrix();
-  loadingRenderer.setSize(window.innerWidth, window.innerHeight);
-  matrixCanvas.width = window.innerWidth;
-  matrixCanvas.height = window.innerHeight;
+// Home button click handler
+document.querySelector('.nav-arrow.home-btn').addEventListener('click', () => {
+  currentX = 0;
+  currentY = 0;
+  updatePosition();
+  updateMinimap(currentX, currentY);
 });
 
-// GAMES CODE (Snake, Tic-Tac-Toe, Memory) - Same as before
-let snakeInitialized = false;
+// ============================================
+// SCROLL MANAGEMENT
+// ============================================
+
+let currentScrollElement = null;
+
+document.addEventListener('wheel', (e) => {
+  const isProject1 = currentX === 1 && currentY === 1;
+  const isProject2 = currentX === 2 && currentY === 1;
+  const isCertificate = currentX === 3 && currentY === 1;
+
+  if (!isProject1 && !isProject2 && !isCertificate) return;
+
+  const codeBlock = document.querySelector('.code-block');
+  if (!codeBlock || codeBlock.scrollHeight <= codeBlock.clientHeight) return;
+  
+  e.stopPropagation();
+  codeBlock.scrollTop += e.deltaY;
+}, { passive: false });
+
+document.addEventListener('wheel', (e) => {
+  const isProject1 = currentX === 1 && currentY === 1;
+  const isProject2 = currentX === 2 && currentY === 1;
+  const isCertificate = currentX === 3 && currentY === 1;
+
+  if (isProject1 || isProject2 || isCertificate) {
+    const codeBlock = document.querySelector('.code-block');
+    if (!codeBlock || codeBlock.scrollHeight <= codeBlock.clientHeight) return;
+    
+    e.stopPropagation();
+    codeBlock.scrollTop += e.deltaY;
+    return;
+  }
+  
+  e.preventDefault();
+  clearTimeout(scrollTimeout);
+  scrollTimeout = setTimeout(() => {
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      navigate(e.deltaY > 0 ? 'down' : 'up');
+    } else {
+      navigate(e.deltaX > 0 ? 'right' : 'left');
+    }
+  }, 100);
+}, { passive: false });
+
+// ============================================
+// GAMES CODE (Snake, Tic-Tac-Toe, Memory) - WITH MEMORY CLEANUP
+// ============================================
 
 function initSnakeGame() {
   if (snakeInitialized) return;
@@ -529,13 +1044,16 @@ function initSnakeGame() {
 }
 
 function startSnakeGame() {
+  gameActive = true;
+  currentGameType = 'snake';
   gameKeyboardActive = true;
-  const content = document.getElementById('snake-content');
+  snakeGameRunning = true;
   
+  const content = document.getElementById('snake-content');
   content.innerHTML = `
     <div><span class="prompt">root@ammz:~/games/snake$</span> python3 snake.py</div>
     <div style="margin: 0.5rem 0; font-size: 0.8rem;">
-      Score: <span id="snake-score" style="color: #0f0;">0</span> | <span style="color: #0f08;">WASD/Arrows | ESC=exit</span>
+      Score: <span id="snake-score" style="color: #0f0;">0</span> | <span style="color: #0f08;">WASD/Arrows | ESC=exit R=restart</span>
     </div>
     <div class="game-canvas-center">
       <canvas id="snake-canvas" width="400" height="400"></canvas>
@@ -550,16 +1068,19 @@ function startSnakeGame() {
   const gridSize = 20, tileCount = 20;
   let snake = [{x: 10, y: 10}];
   let food = {x: 15, y: 15};
-  let dx = 0, dy = 0, score = 0, gameRunning = true, gameLoop;
+  let score = 0;
+  
+  currentSnakeDX = 0;
+  currentSnakeDY = 0;
   
   function drawGame() {
-    if (!gameRunning) return;
+    if (!snakeGameRunning) return;
     
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
-    if (dx !== 0 || dy !== 0) {
-      const head = {x: snake[0].x + dx, y: snake[0].y + dy};
+    if (currentSnakeDX !== 0 || currentSnakeDY !== 0) {
+      const head = {x: snake[0].x + currentSnakeDX, y: snake[0].y + currentSnakeDY};
       
       if (head.x < 0 || head.x >= tileCount || head.y < 0 || head.y >= tileCount ||
           snake.some(s => s.x === head.x && s.y === head.y)) {
@@ -584,12 +1105,15 @@ function startSnakeGame() {
     ctx.fillStyle = '#ff0';
     ctx.fillRect(food.x * gridSize, food.y * gridSize, gridSize - 2, gridSize - 2);
     
-    gameLoop = setTimeout(() => requestAnimationFrame(drawGame), 120);
+    currentGameLoop = setTimeout(() => requestAnimationFrame(drawGame), 120);
   }
   
   function gameOver() {
-    gameRunning = false;
-    clearTimeout(gameLoop);
+    snakeGameRunning = false;
+    if (currentGameLoop) {
+      clearTimeout(currentGameLoop);
+      currentGameLoop = null;
+    }
     ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#f00';
@@ -600,35 +1124,62 @@ function startSnakeGame() {
     ctx.font = '20px JetBrains Mono';
     ctx.fillText('Score: ' + score, canvas.width/2, canvas.height/2 + 15);
     ctx.font = '16px JetBrains Mono';
-    ctx.fillText('ESC to exit', canvas.width/2, canvas.height/2 + 45);
+    ctx.fillText('ESC to exit | R to restart', canvas.width/2, canvas.height/2 + 45);
+  }
+  
+  function restartGame() {
+    if (currentGameLoop) {
+      clearTimeout(currentGameLoop);
+      currentGameLoop = null;
+    }
+    startSnakeGame();
   }
   
   const controls = (e) => {
     if (e.key === 'Escape') {
-      gameRunning = false;
-      clearTimeout(gameLoop);
+      if (currentGameLoop) {
+        clearTimeout(currentGameLoop);
+        currentGameLoop = null;
+      }
+      gameActive = false;
+      currentGameType = null;
       gameKeyboardActive = false;
+      snakeGameRunning = false;
       snakeInitialized = false;
       document.removeEventListener('keydown', controls);
       initSnakeGame();
       e.preventDefault();
-      return;
     }
-    
-    if (!gameRunning) return;
-    
-    if ((e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') && dy === 0) { dx = 0; dy = -1; e.preventDefault(); }
-    if ((e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') && dy === 0) { dx = 0; dy = 1; e.preventDefault(); }
-    if ((e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') && dx === 0) { dx = -1; dy = 0; e.preventDefault(); }
-    if ((e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') && dx === 0) { dx = 1; dy = 0; e.preventDefault(); }
+    else if (e.key === 'r' || e.key === 'R') {
+      restartGame();
+      e.preventDefault();
+    }
+    else if (snakeGameRunning) {
+      if ((e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') && currentSnakeDY === 0) { 
+        currentSnakeDX = 0; currentSnakeDY = -1; e.preventDefault(); 
+      }
+      if ((e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') && currentSnakeDY === 0) { 
+        currentSnakeDX = 0; currentSnakeDY = 1; e.preventDefault(); 
+      }
+      if ((e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') && currentSnakeDX === 0) { 
+        currentSnakeDX = -1; currentSnakeDY = 0; e.preventDefault(); 
+      }
+      if ((e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') && currentSnakeDX === 0) { 
+        currentSnakeDX = 1; currentSnakeDY = 0; e.preventDefault(); 
+      }
+    }
   };
   
+  // Clean up previous controls
+  if (currentGameControls) {
+    document.removeEventListener('keydown', currentGameControls);
+  }
+  
+  currentGameControls = controls;
   document.addEventListener('keydown', controls);
   drawGame();
+  updateMobileGameButtons();
 }
-
-// TIC-TAC-TOE & MEMORY GAMES - Same implementation as before
-let tttInitialized = false;
 
 function initTicTacToe() {
   if (tttInitialized) return;
@@ -658,7 +1209,11 @@ function initTicTacToe() {
 }
 
 function startTicTacToe() {
+  gameActive = true;
+  currentGameType = 'tictactoe';
   gameKeyboardActive = true;
+  tttGameActive = true;
+  
   const content = document.getElementById('ttt-content');
   
   content.innerHTML = `
@@ -673,7 +1228,7 @@ function startTicTacToe() {
   `;
   
   let board = ['', '', '', '', '', '', '', '', ''];
-  let gameActive = true, currentPlayer = 'X';
+  let tttGameRunning = true, currentPlayer = 'X';
   const boardEl = document.getElementById('ttt-board');
   
   for (let i = 0; i < 9; i++) {
@@ -681,7 +1236,7 @@ function startTicTacToe() {
     cell.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 2.5rem; cursor: pointer; transition: all 0.2s;`;
     
     cell.addEventListener('click', () => {
-      if (board[i] !== '' || !gameActive || currentPlayer !== 'X') return;
+      if (board[i] !== '' || !tttGameRunning || currentPlayer !== 'X') return;
       board[i] = 'X';
       updateBoard();
       if (checkWinner('X')) { endGame('🎉 You Win!', '#0f0'); return; }
@@ -692,9 +1247,10 @@ function startTicTacToe() {
     });
     
     cell.addEventListener('mouseenter', () => {
-      if (board[i] === '' && gameActive && currentPlayer === 'X') cell.style.background = 'rgba(0, 255, 0, 0.25)';
+      if (board[i] === '' && tttGameRunning && currentPlayer === 'X') cell.style.background = 'rgba(0, 255, 0, 0.25)';
     });
     cell.addEventListener('mouseleave', () => {
+      hideCursor();
       if (board[i] === '') cell.style.background = 'rgba(0, 255, 0, 0.1)';
     });
     
@@ -742,14 +1298,16 @@ function startTicTacToe() {
   }
   
   function endGame(message, color) {
-    gameActive = false;
+    tttGameRunning = false;
+    tttGameActive = false;
     document.getElementById('ttt-status').textContent = message;
     document.getElementById('ttt-status').style.color = color;
   }
   
   function restart() {
     board = ['', '', '', '', '', '', '', '', ''];
-    gameActive = true;
+    tttGameRunning = true;
+    tttGameActive = true;
     currentPlayer = 'X';
     updateBoard();
     document.getElementById('ttt-status').textContent = 'Your turn (X)';
@@ -759,6 +1317,9 @@ function startTicTacToe() {
   const controls = (e) => {
     if (e.key === 'Escape') {
       gameKeyboardActive = false;
+      gameActive = false;
+      currentGameType = null;
+      tttGameActive = false;
       tttInitialized = false;
       document.removeEventListener('keydown', controls);
       initTicTacToe();
@@ -766,10 +1327,16 @@ function startTicTacToe() {
     }
     if (e.key === 'r' || e.key === 'R') { restart(); e.preventDefault(); }
   };
+  
+  // Clean up previous controls
+  if (currentTTTControls) {
+    document.removeEventListener('keydown', currentTTTControls);
+  }
+  
+  currentTTTControls = controls;
   document.addEventListener('keydown', controls);
+  updateMobileGameButtons();
 }
-
-let memInitialized = false;
 
 function initMemoryGame() {
   if (memInitialized) return;
@@ -799,13 +1366,17 @@ function initMemoryGame() {
 }
 
 function startMemoryGame() {
+  gameActive = true;
+  currentGameType = 'memory';
   gameKeyboardActive = true;
+  memoryGameActive = true;
+  
   const content = document.getElementById('mem-content');
   
   const emojis = ['🎮', '🎯', '🎲', '🎪', '🎨', '🎭', '🎬', '🎸'];
   const cards = [...emojis, ...emojis].sort(() => Math.random() - 0.5);
   
-  let flipped = [], matched = [], moves = 0, canClick = true, timeLeft = 30, timerInterval;
+  let flipped = [], matched = [], moves = 0, canClick = true, timeLeft = 30;
   
   content.innerHTML = `
     <div><span class="prompt">root@ammz:~/games/memory$</span> python3 memory.py</div>
@@ -846,7 +1417,11 @@ function startMemoryGame() {
           canClick = true;
           
           if (matched.length === 8) {
-            clearInterval(timerInterval);
+            if (currentMemoryTimer) {
+              clearInterval(currentMemoryTimer);
+              currentMemoryTimer = null;
+            }
+            memoryGameActive = false;
             setTimeout(() => {
               document.getElementById('mem-timer').parentElement.innerHTML = 
                 `<span style="color: #0f0;">🎉 Won in ${moves} moves with ${timeLeft}s left!</span> | <span style="color: #0f08;">ESC=exit</span>`;
@@ -868,7 +1443,12 @@ function startMemoryGame() {
     boardEl.appendChild(card);
   });
   
-  timerInterval = setInterval(() => {
+  // Clear previous timer
+  if (currentMemoryTimer) {
+    clearInterval(currentMemoryTimer);
+  }
+  
+  currentMemoryTimer = setInterval(() => {
     timeLeft--;
     const timerEl = document.getElementById('mem-timer');
     timerEl.textContent = timeLeft + 's';
@@ -877,109 +1457,151 @@ function startMemoryGame() {
     if (timeLeft <= 5) timerEl.style.color = '#f00';
     
     if (timeLeft <= 0) {
-      clearInterval(timerInterval);
+      clearInterval(currentMemoryTimer);
+      currentMemoryTimer = null;
       canClick = false;
+      memoryGameActive = false;
       document.getElementById('mem-timer').parentElement.innerHTML = 
         `<span style="color: #f00;">⏰ Time's Up!</span> | <span style="color: #0f08;">R=retry ESC=exit</span>`;
     }
   }, 1000);
   
   function restart() {
-    clearInterval(timerInterval);
-    gameKeyboardActive = false;
-    memInitialized = false;
-    startMemoryGame();
+    // Clear current timer
+    if (currentMemoryTimer) {
+      clearInterval(currentMemoryTimer);
+      currentMemoryTimer = null;
+    }
+    
+    gameActive = true;
+    currentGameType = 'memory';
+    gameKeyboardActive = true;
+    memoryGameActive = true;
+    
+    // Reset game variables
+    flipped = [];
+    matched = [];
+    moves = 0;
+    canClick = true;
+    timeLeft = 30;
+    
+    // Update UI
+    document.getElementById('mem-moves').textContent = '0';
+    document.getElementById('mem-matched').textContent = '0/8';
+    document.getElementById('mem-timer').textContent = '30s';
+    document.getElementById('mem-timer').style.color = '#0f0';
+    
+    // Clear the board and recreate cards
+    boardEl.innerHTML = '';
+    cards.sort(() => Math.random() - 0.5);
+    
+    cards.forEach((emoji) => {
+      const card = document.createElement('div');
+      card.dataset.emoji = emoji;
+      card.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 2rem; cursor: pointer; transition: all 0.3s;`;
+      card.textContent = '?';
+      
+      card.addEventListener('click', () => {
+        if (!canClick || flipped.includes(card) || matched.includes(card.dataset.emoji)) return;
+        
+        card.textContent = card.dataset.emoji;
+        card.style.background = 'rgba(0, 255, 0, 0.3)';
+        flipped.push(card);
+        
+        if (flipped.length === 2) {
+          canClick = false;
+          moves++;
+          document.getElementById('mem-moves').textContent = moves;
+          
+          const [card1, card2] = flipped;
+          
+          if (card1.dataset.emoji === card2.dataset.emoji) {
+            matched.push(card1.dataset.emoji);
+            document.getElementById('mem-matched').textContent = `${matched.length}/8`;
+            flipped = [];
+            canClick = true;
+            
+            if (matched.length === 8) {
+              if (currentMemoryTimer) {
+                clearInterval(currentMemoryTimer);
+                currentMemoryTimer = null;
+              }
+              memoryGameActive = false;
+              setTimeout(() => {
+                document.getElementById('mem-timer').parentElement.innerHTML = 
+                  `<span style="color: #0f0;">🎉 Won in ${moves} moves with ${timeLeft}s left!</span> | <span style="color: #0f08;">ESC=exit</span>`;
+              }, 300);
+            }
+          } else {
+            setTimeout(() => {
+              card1.textContent = '?';
+              card2.textContent = '?';
+              card1.style.background = 'rgba(0, 255, 0, 0.1)';
+              card2.style.background = 'rgba(0, 255, 0, 0.1)';
+              flipped = [];
+              canClick = true;
+            }, 800);
+          }
+        }
+      });
+      
+      boardEl.appendChild(card);
+    });
+    
+    // Start new timer
+    currentMemoryTimer = setInterval(() => {
+      timeLeft--;
+      const timerEl = document.getElementById('mem-timer');
+      timerEl.textContent = timeLeft + 's';
+      
+      if (timeLeft <= 10) timerEl.style.color = '#ff0';
+      if (timeLeft <= 5) timerEl.style.color = '#f00';
+      
+      if (timeLeft <= 0) {
+        clearInterval(currentMemoryTimer);
+        currentMemoryTimer = null;
+        canClick = false;
+        memoryGameActive = false;
+        document.getElementById('mem-timer').parentElement.innerHTML = 
+          `<span style="color: #f00;">⏰ Time's Up!</span> | <span style="color: #0f08;">R=retry ESC=exit</span>`;
+      }
+    }, 1000);
   }
   
   const controls = (e) => {
     if (e.key === 'Escape') {
-      clearInterval(timerInterval);
+      if (currentMemoryTimer) {
+        clearInterval(currentMemoryTimer);
+        currentMemoryTimer = null;
+      }
       gameKeyboardActive = false;
+      gameActive = false;
+      currentGameType = null;
+      memoryGameActive = false;
       memInitialized = false;
       document.removeEventListener('keydown', controls);
       initMemoryGame();
       e.preventDefault();
     }
-    if (e.key === 'r' || e.key === 'R') {
-      document.removeEventListener('keydown', controls);
-      restart();
-      e.preventDefault();
+    if (e.key === 'r' || e.key === 'R') { 
+      restart(); 
+      e.preventDefault(); 
     }
   };
+  
+  // Clean up previous controls
+  if (currentMemoryControls) {
+    document.removeEventListener('keydown', currentMemoryControls);
+  }
+  
+  currentMemoryControls = controls;
   document.addEventListener('keydown', controls);
+  updateMobileGameButtons();
 }
 
-
-// Scrollable content for projects
-let currentScrollElement = null;
-
-document.addEventListener('wheel', (e) => {
-  // Check if we're in project 1 or 2
-  const isProject1 = currentX === 1 && currentY === 1;
-  const isProject2 = currentX === 2 && currentY === 1;
-  
-  if (!isProject1 && !isProject2) return;
-  
-  // Find the scrollable code block
-  const codeBlock = document.querySelector('.code-block');
-  if (!codeBlock || codeBlock.scrollHeight <= codeBlock.clientHeight) return;
-  
-  // Allow scrolling inside project
-  e.stopPropagation();
-  codeBlock.scrollTop += e.deltaY;
-}, { passive: true });
-
-// Scroll with UP/DOWN nav buttons for projects
-document.addEventListener('keydown', (e) => {
-  const isProject1 = currentX === 1 && currentY === 1;
-  const isProject2 = currentX === 2 && currentY === 1;
-  
-  if (!isProject1 && !isProject2) return;
-  if (gameKeyboardActive) return;
-  
-  const codeBlock = document.querySelector('.code-block');
-  if (!codeBlock) return;
-  
-  const scrollAmount = 80;
-  
-  if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    codeBlock.scrollTop -= scrollAmount;
-  }
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    codeBlock.scrollTop += scrollAmount;
-  }
-});
-
-
-// Home button click handler
-document.querySelector('.nav-arrow.home-btn').addEventListener('click', () => {
-  currentX = 0;
-  currentY = 0;
-  updatePosition();
-  updateMinimap(currentX, currentY);
-});
-
-
-function showCertModal(imageName) {
-  const modal = document.getElementById('certModal');
-  const img = document.getElementById('certImage');
-  img.src = `./certificates/${imageName}`; // Adjust path if needed
-  modal.classList.add('active');
-}
-
-function closeCertModal(event) {
-  if (event && event.target.id !== 'certModal') return;
-  const modal = document.getElementById('certModal');
-  modal.classList.remove('active');
-}
-
-// Close on ESC key
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeCertModal();
-});
-
+// ============================================
+// CERTIFICATE SYSTEM
+// ============================================
 
 const certImageMap = {
   'freecodecamp': '/static/portfolio/certificates/freecodecamp.jpg',
@@ -991,46 +1613,305 @@ const certImageMap = {
 
 let currentCertImage = null;
 let hoverTimeout = null;
+let currentCertPopup = null;
 
-document.querySelectorAll('.cert-card').forEach(card => {
-  card.addEventListener('mouseenter', function() {
-    clearTimeout(hoverTimeout); // Clear any pending hide
-    
-    const certName = this.getAttribute('data-cert');
-    if (!certImageMap[certName]) return;
-    
-    // Create image only once
-    if (!currentCertImage) {
-      currentCertImage = document.createElement('img');
-      currentCertImage.style.cssText = `
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        width: 350px;
-        max-height: 70vh;
-        border: 3px solid #0f0;
-        border-radius: 12px;
-        box-shadow: 0 0 40px rgba(0, 255, 0, 0.8);
-        z-index: 5000;
-        opacity: 0;
-        transition: opacity 0.3s ease-out;
-        pointer-events: none;
-      `;
-      document.body.appendChild(currentCertImage);
-    }
-    
-    // Load image & show
-    currentCertImage.src = certImageMap[certName];
-    currentCertImage.style.opacity = '1';
+function setupCertificates() {
+  if (currentX !== 1 || currentY !== 0) return;
+  
+  if (currentCertImage) {
+    currentCertImage.remove();
+    currentCertImage = null;
+  }
+  if (currentCertPopup) {
+    currentCertPopup.remove();
+    currentCertPopup = null;
+  }
+  
+  const certCards = document.querySelectorAll('.cert-card');
+  
+  certCards.forEach(card => {
+    card.replaceWith(card.cloneNode(true));
   });
   
-  card.addEventListener('mouseleave', function() {
-    // Delay hide to prevent flickering
-    hoverTimeout = setTimeout(() => {
-      if (currentCertImage) {
-        currentCertImage.style.opacity = '0';
-      }
-    }, 100);
+  document.querySelectorAll('.cert-card').forEach(card => {
+    card.style.cursor = 'pointer';
+    
+    if (window.innerWidth > 768) {
+      card.addEventListener('mouseenter', function() {
+        clearTimeout(hoverTimeout);
+        
+        const certName = this.getAttribute('data-cert');
+        if (!certImageMap[certName]) return;
+        
+        if (!currentCertImage) {
+          currentCertImage = document.createElement('img');
+          currentCertImage.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 300px;
+            max-height: 60vh;
+            border: 2px solid #0f0;
+            border-radius: 8px;
+            box-shadow: 0 0 30px rgba(0, 255, 0, 0.6);
+            z-index: 5000;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+          `;
+          document.body.appendChild(currentCertImage);
+        }
+        
+        currentCertImage.src = certImageMap[certName];
+        currentCertImage.style.opacity = '1';
+      });
+      
+      card.addEventListener('mouseleave', function() {
+        if (currentCertImage) {
+          currentCertImage.style.opacity = '0';
+          hoverTimeout = setTimeout(() => {
+            if (currentCertImage && currentCertImage.style.opacity === '0') {
+              currentCertImage.remove();
+              currentCertImage = null;
+            }
+          }, 200);
+        }
+      });
+    }
+    
+    card.addEventListener('click', function(e) {
+      e.preventDefault();
+      const certName = this.getAttribute('data-cert');
+      if (!certImageMap[certName]) return;
+      
+      showCertPopup(certName, this);
+    });
   });
+}
+
+function showCertPopup(certName, cardElement) {
+  if (currentCertPopup) {
+    currentCertPopup.remove();
+    currentCertPopup = null;
+  }
+  
+  const isMobile = window.innerWidth <= 768;
+  
+  const safeWidth = isMobile ? '90%' : '450px';
+  const safeMaxHeight = isMobile ? '50vh' : '60vh';
+  
+  currentCertPopup = document.createElement('div');
+  currentCertPopup.style.cssText = `
+    position: fixed;
+    top: 40%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: ${safeWidth};
+    max-width: 95vw;
+    max-height: ${safeMaxHeight};
+    background: rgba(0, 15, 0, 0.98);
+    border: 2px solid #0f0;
+    border-radius: 8px;
+    z-index: 10000;
+    box-shadow: 0 0 40px rgba(0, 255, 0, 0.7);
+    overflow: hidden;
+    font-family: 'JetBrains Mono', monospace;
+  `;
+  
+  const header = document.createElement('div');
+  header.style.cssText = `
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.8rem 1rem;
+    border-bottom: 1px solid #0f0;
+    background: rgba(0, 25, 0, 0.9);
+  `;
+  
+  const title = document.createElement('div');
+  title.textContent = 'CERTIFICATE VIEWER';
+  title.style.cssText = `
+    color: #0f0;
+    font-size: 0.8rem;
+    font-weight: bold;
+  `;
+  
+  const closeBtn = document.createElement('div');
+  closeBtn.innerHTML = '✕';
+  closeBtn.style.cssText = `
+    background: rgba(255, 0, 0, 0.3);
+    border: 1px solid #f00;
+    color: #f00;
+    width: 24px;
+    height: 24px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: bold;
+  `;
+  
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+  
+  const content = document.createElement('div');
+  content.style.cssText = `
+    padding: 1rem;
+    max-height: calc(${safeMaxHeight} - 50px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+  `;
+  
+  const img = new Image();
+  img.src = certImageMap[certName];
+  img.style.cssText = `
+    max-width: 100%;
+    max-height: ${isMobile ? '35vh' : '45vh'};
+    border-radius: 4px;
+    border: 1px solid #0f0;
+  `;
+  
+  const fileName = document.createElement('div');
+  fileName.textContent = `${certName}.jpg`;
+  fileName.style.cssText = `
+    color: #0f0;
+    font-size: 0.7rem;
+    opacity: 0.8;
+  `;
+  
+  content.appendChild(img);
+  content.appendChild(fileName);
+  
+  currentCertPopup.appendChild(header);
+  currentCertPopup.appendChild(content);
+  document.body.appendChild(currentCertPopup);
+  
+  function closePopup() {
+    if (currentCertPopup) {
+      currentCertPopup.remove();
+      currentCertPopup = null;
+    }
+  }
+  
+  closeBtn.addEventListener('click', closePopup);
+  
+  currentCertPopup.addEventListener('click', (e) => {
+    if (e.target === currentCertPopup) closePopup();
+  });
+  
+  function handleKeydown(e) {
+    if (e.key === 'Escape' && currentCertPopup) {
+      closePopup();
+    }
+  }
+  document.addEventListener('keydown', handleKeydown);
+  
+  if (isMobile) {
+    let startY = 0;
+    currentCertPopup.addEventListener('touchstart', (e) => {
+      startY = e.touches[0].clientY;
+    });
+    
+    currentCertPopup.addEventListener('touchend', (e) => {
+      const endY = e.changedTouches[0].clientY;
+      if (endY - startY > 50) {
+        closePopup();
+      }
+    });
+  }
+}
+
+function checkAndSetupCertificates() {
+  if (currentX === 1 && currentY === 0) {
+    setTimeout(setupCertificates, 100);
+  } else {
+    if (currentCertImage) {
+      currentCertImage.remove();
+      currentCertImage = null;
+    }
+    if (currentCertPopup) {
+      currentCertPopup.remove();
+      currentCertPopup = null;
+    }
+  }
+}
+
+const originalUpdateMinimap = updateMinimap;
+updateMinimap = function(x, y) {
+  originalUpdateMinimap(x, y);
+  checkAndSetupCertificates();
+};
+
+// ============================================
+// WINDOW RESIZE HANDLING
+// ============================================
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  loadingCamera.aspect = window.innerWidth / window.innerHeight;
+  loadingCamera.updateProjectionMatrix();
+  loadingRenderer.setSize(window.innerWidth, window.innerHeight);
+  matrixCanvas.width = window.innerWidth;
+  matrixCanvas.height = window.innerHeight;
 });
+
+// ============================================
+// MEMORY CLEANUP ON PAGE UNLOAD
+// ============================================
+
+window.addEventListener('beforeunload', () => {
+  // Clear all intervals and timeouts
+  if (matrixInterval) clearInterval(matrixInterval);
+  if (currentGameLoop) clearTimeout(currentGameLoop);
+  if (currentMemoryTimer) clearInterval(currentMemoryTimer);
+  
+  // Cancel animation frames
+  if (loadingAnimationId) cancelAnimationFrame(loadingAnimationId);
+  if (mainAnimationId) cancelAnimationFrame(mainAnimationId);
+  
+  // Remove event listeners
+  if (currentGameControls) {
+    document.removeEventListener('keydown', currentGameControls);
+  }
+  if (currentTTTControls) {
+    document.removeEventListener('keydown', currentTTTControls);
+  }
+  if (currentMemoryControls) {
+    document.removeEventListener('keydown', currentMemoryControls);
+  }
+  
+  // Clean up Three.js resources
+  threeSceneObjects.forEach(obj => {
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      if (Array.isArray(obj.material)) {
+        obj.material.forEach(m => m.dispose());
+      } else {
+        obj.material.dispose();
+      }
+    }
+  });
+  
+  // Clear WebGL contexts
+  if (matrixCtx) {
+    matrixCanvas.width = 1;
+    matrixCanvas.height = 1;
+  }
+});
+
+// ============================================
+// INITIALIZATION
+// ============================================
+
+updatePosition();
+updateMinimap(0, 0);
+setupMobileGameButtons();
+setTimeout(checkAndSetupCertificates, 1000);

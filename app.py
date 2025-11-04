@@ -806,49 +806,28 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-@app.route('/<path:filename>')
-def serve_static_subdomain(filename):
-    """Serve static files based on subdomain"""
-    subdomain = get_subdomain()
-    
-    if subdomain == 'tempmail':
-        # Serve from tempmail folder on subdomain
-        return send_from_directory('static/projects/tempmail', filename)
-    else:
-        # Serve from portfolio folder on main domain
-        return send_from_directory('static/portfolio', filename)
+@app.route('/')
+def tempmail_home():
+    return send_from_directory('static/projectstempmail', 'index.html')
+
+@app.route('/admin')
+def tempmail_admin():
+    return send_from_directory('static/projectstempmail', 'admin.html')
 
 
 @app.route('/')
-def index():
-    """Route based on subdomain"""
-    subdomain = get_subdomain()
-    
-    if subdomain == 'tempmail':
-        # tempmail.aungmyomyatzaw.online → tempmail home
-        return send_from_directory('static/projects/tempmail', 'index.html')
-    else:
-        # aungmyomyatzaw.online → portfolio
-        return send_from_directory('static/portfolio', 'index.html')
-
-@app.route('/portfolio')
-def portfolio_redirect():
-    """Alias for portfolio"""
+def portfolio_home():
+    """Portfolio as main landing page"""
     return send_from_directory('static/portfolio', 'index.html')
 
-@app.route('/portfolio/<path:filename>')
-def portfolio_static(filename):
-    """Serve portfolio static files"""
-    return send_from_directory('static/portfolio', filename)
 
-@app.route('/projects/downloader')
+@app.route('/downloader')
 def downloader_home():
     """Downloader frontend"""
     return send_from_directory('static/projects/downloader', 'index.html')
 
-@app.route('/projects/downloader/<path:filename>')
+@app.route('/downloader/<path:filename>')
 def downloader_static(filename):
-    """Serve downloader static files"""
     return send_from_directory('static/projects/downloader', filename)
 
 @app.route('/api/download', methods=['POST'])
@@ -871,7 +850,7 @@ def proxy_to_lambda():
         response = requests.post(
             LAMBDA_API_URL,
             json=data,
-            timeout=300  # Render handles longer timeouts than Netlify
+            timeout=60  # Render handles longer timeouts than Netlify
         )
         
         logger.info(f"📤 Lambda response status: {response.status_code}")
@@ -888,32 +867,6 @@ def proxy_to_lambda():
     except Exception as e:
         logger.error(f"Proxy error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-    
-def get_subdomain():
-    """Detect which subdomain the request is coming from"""
-    host = request.host.lower()
-    if 'tempmail.' in host:
-        return 'tempmail'
-    return 'main'
-
-
-@app.route('/projects/tempmail')
-def tempmail_home():
-    """Tempmail main page"""
-    return send_from_directory('static/projects/tempmail', 'index.html')
-
-@app.route('/projects/tempmail/admin')
-def tempmail_admin():
-    """Tempmail admin page"""
-    return send_from_directory('static/projects/tempmail', 'admin.html')
-
-@app.route('/projects/tempmail/<path:filename>')
-def tempmail_static(filename):
-    """Serve tempmail static files"""
-    return send_from_directory('static/projects/tempmail', filename)
-
-
-
 
 
 
@@ -2631,6 +2584,4 @@ create_indexes_if_needed()
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV') == 'development'
-
     app.run(host='0.0.0.0', port=port, debug=debug)
-
