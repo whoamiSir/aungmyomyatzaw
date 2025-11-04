@@ -93,7 +93,7 @@ def get_db():
         try:
             conn = psycopg2.connect(DATABASE_URL, sslmode='require')
             return conn
-        except OperationalError as e:
+        except psycopg2.OperationalError as e:
             logger.warning(f"Database connection attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
                 time_module.sleep(retry_delay)
@@ -806,13 +806,6 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-@app.route('/')
-def tempmail_home():
-    return send_from_directory('static/projectstempmail', 'index.html')
-
-@app.route('/admin')
-def tempmail_admin():
-    return send_from_directory('static/projectstempmail', 'admin.html')
 
 
 @app.route('/')
@@ -820,15 +813,27 @@ def portfolio_home():
     """Portfolio as main landing page"""
     return send_from_directory('static/portfolio', 'index.html')
 
-
 @app.route('/downloader')
 def downloader_home():
     """Downloader frontend"""
     return send_from_directory('static/projects/downloader', 'index.html')
 
-@app.route('/downloader/<path:filename>')
-def downloader_static(filename):
-    return send_from_directory('static/projects/downloader', filename)
+
+@app.route('/projects/tempmail')
+def tempmail_home():
+    """Tempmail main page"""
+    return send_from_directory('static/projects/tempmail', 'index.html')
+
+@app.route('/projects/tempmail/admin')
+def tempmail_admin():
+    """Tempmail admin page"""
+    return send_from_directory('static/projects/tempmail', 'admin.html')
+
+@app.route('/projects/tempmail/<path:filename>')
+def tempmail_static(filename):
+    """Serve tempmail static files"""
+    return send_from_directory('static/projects/tempmail', filename)
+
 
 @app.route('/api/download', methods=['POST'])
 def proxy_to_lambda():
@@ -867,8 +872,6 @@ def proxy_to_lambda():
     except Exception as e:
         logger.error(f"Proxy error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
-
 
 
 
