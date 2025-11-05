@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, send_from_directory, session
+from flask import Flask, redirect, request, jsonify, render_template, send_from_directory, session
 from flask_cors import CORS
 import os
 import requests
@@ -806,33 +806,53 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-
-
 @app.route('/')
 def portfolio_home():
     """Portfolio as main landing page"""
-    return send_from_directory('static/portfolio', 'index.html')
+    host = request.headers.get('Host', '')
+    
+    if 'tempmail.' in host:
+        return send_from_directory('static/projects/tempmail', 'index.html')
+    else:
+        return send_from_directory('static/portfolio', 'index.html')
+
+@app.route('/admin')
+def admin_panel():
+    """Admin panel - works for both domains"""
+    host = request.headers.get('Host', '')
+    
+    if 'tempmail.' in host:
+        return send_from_directory('static/projects/tempmail', 'admin.html')
+    else:
+        # If someone accesses /admin on main domain, redirect to tempmail subdomain
+        return redirect('https://tempmail.aungmyomyatzaw.online/admin')
 
 @app.route('/downloader')
 def downloader_home():
-    """Downloader frontend"""
+    """Downloader frontend - only on main domain"""
     return send_from_directory('static/projects/downloader', 'index.html')
 
-
 @app.route('/projects/tempmail')
-def tempmail_home():
-    """Tempmail main page"""
-    return send_from_directory('static/projects/tempmail', 'index.html')
+def tempmail_redirect():
+    """Redirect main domain tempmail access to subdomain"""
+    return redirect('https://tempmail.aungmyomyatzaw.online')
 
 @app.route('/projects/tempmail/admin')
-def tempmail_admin():
-    """Tempmail admin page"""
-    return send_from_directory('static/projects/tempmail', 'admin.html')
+def tempmail_admin_redirect():
+    """Redirect main domain tempmail admin to subdomain"""
+    return redirect('https://tempmail.aungmyomyatzaw.online/admin')
 
+# Update your static file serving for tempmail
 @app.route('/projects/tempmail/<path:filename>')
 def tempmail_static(filename):
     """Serve tempmail static files"""
-    return send_from_directory('static/projects/tempmail', filename)
+    host = request.headers.get('Host', '')
+    
+    if 'tempmail.' in host:
+        return send_from_directory('static/projects/tempmail', filename)
+    else:
+        # If accessed from main domain, redirect to subdomain
+        return redirect(f'https://tempmail.aungmyomyatzaw.online/{filename}')
 
 
 @app.route('/api/download', methods=['POST'])
