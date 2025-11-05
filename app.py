@@ -1643,12 +1643,6 @@ def cleanup_expired_sessions():
 cleanup_thread = Thread(target=cleanup_expired_sessions, daemon=True)
 cleanup_thread.start()
 
-# Admin routes
-
-@app.route('/admin')
-def admin_panel():
-    return render_template('admin.html')
-
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
     try:
