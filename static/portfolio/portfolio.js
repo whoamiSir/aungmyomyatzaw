@@ -2,7 +2,7 @@ let selectedLanguage = 'en';
 
 // Game state tracking
 let gameActive = false;
-let currentGameType = null;
+let currentGameType = null; // 'snake', 'tictactoe', 'memory'
 let snakeGameRunning = false;
 let tttGameActive = false;
 let memoryGameActive = false;
@@ -11,36 +11,12 @@ let memoryGameActive = false;
 let snakeInitialized = false;
 let tttInitialized = false;
 let memInitialized = false;
-
 // Snake game variables
 let currentSnakeDX = 0, currentSnakeDY = 0;
 let cursorVisible = true;
 let cursorTimeout;
-
-
-// ============================================
-// MEMORY LEAK PREVENTION - ADD THESE VARIABLES
-// ============================================
-
-// Animation intervals for cleanup
-let matrixInterval;
-let loadingAnimationId;
-let mainAnimationId;
 let connectionLines = null;
-
-// Game cleanup trackers
-let currentGameControls = null;
-let currentGameLoop = null;
-let currentTTTControls = null;
-let currentMemoryControls = null;
-let currentMemoryTimer = null;
-
-// Three.js cleanup
-let threeSceneObjects = [];
-
-// ============================================
-// CURSOR MANAGEMENT
-// ============================================
+let loadingAnimationId = null;
 
 function showCursor() {
   if (!cursorVisible) {
@@ -70,7 +46,7 @@ hideCursor();
 
 // Hide cursor after any button click or interaction
 document.addEventListener('click', () => {
-  setTimeout(hideCursor, 500);
+  setTimeout(hideCursor, 500); // Hide after 0.5 seconds
 });
 
 // Specifically for your game control buttons
@@ -79,35 +55,32 @@ document.addEventListener('click', (e) => {
       e.target.classList.contains('cmd-button') ||
       e.target.classList.contains('nav-arrow') ||
       e.target.classList.contains('minimap-cell')) {
-    setTimeout(hideCursor, 300);
+    setTimeout(hideCursor, 300); // Hide faster for game buttons
   }
 });
 
 // Also hide cursor when tapping anywhere on mobile
 document.addEventListener('touchend', (e) => {
+  // Only hide if it's not a scroll gesture
   if (e.touches && e.touches.length === 0) {
     setTimeout(hideCursor, 500);
   }
 });
 
-// ============================================
-// HOVER EFFECTS
-// ============================================
-
 function addButtonHoverEffect(button) {
-  if (!('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
-    button.style.setProperty('background', '#0f0', 'important');
-    button.style.setProperty('color', '#000', 'important');
-    button.style.setProperty('transform', 'scale(1.05)', 'important');
-    button.style.setProperty('box-shadow', '0 0 15px #0f0', 'important');
-    
-    setTimeout(() => {
-      button.style.removeProperty('background');
-      button.style.removeProperty('color');
-      button.style.removeProperty('transform');
-      button.style.removeProperty('box-shadow');
-    }, 150);
-  }
+  // Add hover styles with !important equivalent
+  button.style.setProperty('background', '#0f0', 'important');
+  button.style.setProperty('color', '#000', 'important');
+  button.style.setProperty('transform', 'scale(1.05)', 'important');
+  button.style.setProperty('box-shadow', '0 0 15px #0f0', 'important');
+  
+  // Remove hover effect after 1 second
+  setTimeout(() => {
+    button.style.removeProperty('background');
+    button.style.removeProperty('color');
+    button.style.removeProperty('transform');
+    button.style.removeProperty('box-shadow');
+  }, 150);
 }
 
 // Apply to all interactive elements
@@ -126,10 +99,6 @@ document.addEventListener('touchend', (e) => {
     addButtonHoverEffect(element);
   }
 });
-
-// ============================================
-// TOUCH HANDLING
-// ============================================
 
 document.addEventListener('touchstart', handleTouch);
 document.addEventListener('touchmove', handleTouch);
@@ -157,36 +126,48 @@ function handleTouch(e) {
   }
 }
 
-// ============================================
-// MOBILE GAME BUTTONS
-// ============================================
-
+// Mobile Game Button Controls
 function setupMobileGameButtons() {
   // Snake game buttons
   const snakeEnterBtn = document.getElementById('snake-enter-btn');
   const snakeRestartBtn = document.getElementById('snake-restart-btn');
   
-  if (snakeEnterBtn) {
-    snakeEnterBtn.addEventListener('click', () => {
-      if (!snakeInitialized) {
-        startSnakeGame();
-      } else if (gameKeyboardActive && currentGameType === 'snake') {
-        const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape' });
-        document.dispatchEvent(escEvent);
-      } else {
-        startSnakeGame();
-      }
-    });
-  }
+if (snakeEnterBtn) {
+  snakeEnterBtn.addEventListener('click', () => {
+    if (!snakeInitialized) {
+      startSnakeGame();
+    } else if (gameKeyboardActive && currentGameType === 'snake') {
+      // ESC functionality
+      const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape' });
+      document.dispatchEvent(escEvent);
+    } else {
+      startSnakeGame();
+    }
+  });
+}
 
-  if (snakeRestartBtn) {
-    snakeRestartBtn.addEventListener('click', () => {
-      if (gameKeyboardActive && currentGameType === 'snake') {
-        const rEvent = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', keyCode: 82 });
-        document.dispatchEvent(rEvent);
-      }
-    });
-  }
+if (snakeRestartBtn) {
+  snakeRestartBtn.addEventListener('click', () => {
+    if (gameKeyboardActive && currentGameType === 'snake') {
+      // RESTART functionality
+      const rEvent = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR' });
+      document.dispatchEvent(rEvent);
+    }
+  });
+}
+  
+if (snakeRestartBtn) {
+  snakeRestartBtn.addEventListener('click', () => {
+    if (gameKeyboardActive && currentGameType === 'snake') {
+      const rEvent = new KeyboardEvent('keydown', { 
+        key: 'r', 
+        code: 'KeyR',
+        keyCode: 82
+      });
+      document.dispatchEvent(rEvent);
+    }
+  });
+}
 
   // TicTacToe buttons
   const tttEnterBtn = document.getElementById('ttt-enter-btn');
@@ -197,7 +178,12 @@ function setupMobileGameButtons() {
       if (!tttInitialized) {
         startTicTacToe();
       } else if (gameKeyboardActive && currentGameType === 'tictactoe') {
-        const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27 });
+        // ESC functionality
+        const escEvent = new KeyboardEvent('keydown', { 
+          key: 'Escape', 
+          code: 'Escape',
+          keyCode: 27
+        });
         document.dispatchEvent(escEvent);
       } else {
         startTicTacToe();
@@ -208,7 +194,11 @@ function setupMobileGameButtons() {
   if (tttRestartBtn) {
     tttRestartBtn.addEventListener('click', () => {
       if (gameKeyboardActive && currentGameType === 'tictactoe') {
-        const rEvent = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', keyCode: 82 });
+        const rEvent = new KeyboardEvent('keydown', { 
+          key: 'r', 
+          code: 'KeyR',
+          keyCode: 82
+        });
         document.dispatchEvent(rEvent);
       }
     });
@@ -223,7 +213,12 @@ function setupMobileGameButtons() {
       if (!memInitialized) {
         startMemoryGame();
       } else if (gameKeyboardActive && currentGameType === 'memory') {
-        const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27 });
+        // ESC functionality
+        const escEvent = new KeyboardEvent('keydown', { 
+          key: 'Escape', 
+          code: 'Escape',
+          keyCode: 27
+        });
         document.dispatchEvent(escEvent);
       } else {
         startMemoryGame();
@@ -234,13 +229,18 @@ function setupMobileGameButtons() {
   if (memoryRestartBtn) {
     memoryRestartBtn.addEventListener('click', () => {
       if (gameKeyboardActive && currentGameType === 'memory') {
-        const rEvent = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', keyCode: 82 });
+        const rEvent = new KeyboardEvent('keydown', { 
+          key: 'r', 
+          code: 'KeyR',
+          keyCode: 82
+        });
         document.dispatchEvent(rEvent);
       }
     });
   }
 }
 
+// Update button text based on game state
 function updateMobileGameButtons() {
   // Snake buttons
   const snakeEnterBtn = document.getElementById('snake-enter-btn');
@@ -261,10 +261,7 @@ function updateMobileGameButtons() {
   }
 }
 
-// ============================================
-// GAME MANAGEMENT
-// ============================================
-
+// Function to exit game and return to tab navigation
 function exitGame() {
   gameActive = false;
   currentGameType = null;
@@ -273,32 +270,7 @@ function exitGame() {
   tttGameActive = false;
   memoryGameActive = false;
   
-  // Clean up game-specific resources
-  if (currentGameLoop) {
-    clearTimeout(currentGameLoop);
-    currentGameLoop = null;
-  }
-  
-  if (currentGameControls) {
-    document.removeEventListener('keydown', currentGameControls);
-    currentGameControls = null;
-  }
-  
-  if (currentTTTControls) {
-    document.removeEventListener('keydown', currentTTTControls);
-    currentTTTControls = null;
-  }
-  
-  if (currentMemoryControls) {
-    document.removeEventListener('keydown', currentMemoryControls);
-    currentMemoryControls = null;
-  }
-  
-  if (currentMemoryTimer) {
-    clearInterval(currentMemoryTimer);
-    currentMemoryTimer = null;
-  }
-
+  // Reset game-specific states
   if (currentGameType === 'snake') {
     snakeInitialized = false;
   }
@@ -306,10 +278,7 @@ function exitGame() {
   updateMobileGameButtons();
 }
 
-// ============================================
-// CURSOR WITH SNOW TRAIL
-// ============================================
-
+// Cursor with Snow Trail
 const customCursor = document.querySelector('.custom-cursor');
 const cursorDot = document.querySelector('.cursor-dot');
 let lastX = 0, lastY = 0, snowParticles = [];
@@ -328,6 +297,17 @@ document.addEventListener('mousemove', (e) => {
     lastY = e.clientY;
   }
 });
+
+function showProjectSection(sectionId) {
+  const section = document.getElementById(sectionId);
+  if (!section) return;
+  
+  const parentCodeBlock = section.closest('.code-block');
+  const allSections = parentCodeBlock.querySelectorAll('.project-content-section');
+  
+  allSections.forEach(s => s.style.display = 'none');
+  section.style.display = 'block';
+}
 
 function createSnowParticle(x, y) {
   // ENFORCE LIMIT BEFORE CREATING
@@ -353,24 +333,6 @@ function createSnowParticle(x, y) {
   }, 600); // Reduced lifetime
 }
 
-// ============================================
-// PROJECT MANAGEMENT
-// ============================================
-
-function showProjectSection(sectionId) {
-  const section = document.getElementById(sectionId);
-  if (!section) return;
-  
-  const parentCodeBlock = section.closest('.code-block');
-  const allSections = parentCodeBlock.querySelectorAll('.project-content-section');
-  
-  allSections.forEach(s => s.style.display = 'none');
-  section.style.display = 'block';
-}
-
-// ============================================
-// LANGUAGE SELECTION
-// ============================================
 
 function selectLanguage(lang) {
   selectedLanguage = lang;
@@ -411,9 +373,8 @@ function selectLanguage(lang) {
 }
 
 // ============================================
-// 3D LOADING EFFECT - PARTICLES + WAVES
+// NEW 3D LOADING EFFECT - PARTICLES + WAVES
 // ============================================
-
 const loadingCanvas = document.getElementById('loading-canvas');
 const loadingScene = new THREE.Scene();
 const loadingCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -462,7 +423,7 @@ loadingCamera.position.z = 30;
 
 function animateLoading() {
   if(!document.getElementById('loading-screen').classList.contains('hidden')) {
-    loadingAnimationId = requestAnimationFrame(animateLoading);
+    requestAnimationFrame(animateLoading);
     
     const positions = particlesGeometry.attributes.position.array;
     for(let i = 0; i < particlesCount * 3; i += 3) {
@@ -485,9 +446,8 @@ function animateLoading() {
 animateLoading();
 
 // ============================================
-// MATRIX RAIN BACKGROUND - WITH CLEANUP
+// MATRIX RAIN BACKGROUND
 // ============================================
-
 const matrixCanvas = document.getElementById('matrix-canvas');
 const matrixCtx = matrixCanvas.getContext('2d');
 matrixCanvas.width = window.innerWidth;
@@ -503,7 +463,7 @@ for(let i = 0; i < columns; i++) {
 }
 
 function drawMatrix() {
-    if (drops[0] % 10 === 0) {
+  if (drops[0] % 10 === 0) {
     matrixCtx.clearRect(0, 0, matrixCanvas.width, matrixCanvas.height);
     matrixCtx.fillStyle = '#000';
     matrixCtx.fillRect(0, 0, matrixCanvas.width, matrixCanvas.height);
@@ -511,8 +471,6 @@ function drawMatrix() {
     matrixCtx.fillStyle = 'rgba(0, 0, 0, 0.05)';
     matrixCtx.fillRect(0, 0, matrixCanvas.width, matrixCanvas.height);
   }
-  
-
 
   matrixCtx.fillStyle = 'rgba(0, 0, 0, 0.05)';
   matrixCtx.fillRect(0, 0, matrixCanvas.width, matrixCanvas.height);
@@ -531,28 +489,11 @@ function drawMatrix() {
   }
 }
 
-// Start matrix rain with cleanup capability
-function startMatrixRain() {
-  if (matrixInterval) {
-    clearInterval(matrixInterval);
-  }
-  matrixInterval = setInterval(drawMatrix, 50);
-}
-
-function stopMatrixRain() {
-  if (matrixInterval) {
-    clearInterval(matrixInterval);
-    matrixInterval = null;
-  }
-}
-
-// Start the matrix rain
-startMatrixRain();
+setInterval(drawMatrix, 50);
 
 // ============================================
 // MAIN 3D BACKGROUND - PARTICLES + NETWORK
 // ============================================
-
 const canvas = document.getElementById('canvas-3d');
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -586,11 +527,9 @@ const mainParticlesMaterial = new THREE.PointsMaterial({
 
 const mainParticlesMesh = new THREE.Points(mainParticlesGeometry, mainParticlesMaterial);
 scene.add(mainParticlesMesh);
-threeSceneObjects.push(mainParticlesMesh);
 
 // Network connections
 const maxDistance = 15;
-
 function updateConnections() {
   const positions = mainParticlesGeometry.attributes.position.array;
   const linePositions = [];
@@ -643,9 +582,9 @@ document.addEventListener('mousemove', (e) => {
 
 let frameCount = 0;
 function animate() {
-  mainAnimationId = requestAnimationFrame(animate);
+    mainAnimationId = requestAnimationFrame(animate);
   
-    frameCount++;
+  frameCount++;
   
   // Only update GPU buffer every 3 frames instead of every frame
   if (frameCount % 3 === 0) {
@@ -690,10 +629,7 @@ function animate() {
 }
 animate();
 
-// ============================================
-// BURMESE TEXT ANIMATION
-// ============================================
-
+// Burmese text
 const burmeseLayer = document.getElementById('burmese-layer');
 const burmeseWords = ['မင်္ဂလာပါ', 'ကျေးဇူးတင်ပါတယ်', 'AMMZ', 'Developer', 'Myanmar'];
 for(let i = 0; i < 10; i++) {
@@ -706,18 +642,20 @@ for(let i = 0; i < 10; i++) {
 }
 
 // ============================================
-// NAVIGATION SYSTEM
+// GAME CONTROL SYSTEM - DUAL FUNCTION NAVIGATION
 // ============================================
 
+// Navigation
 let currentX = 0, currentY = 0, gameKeyboardActive = false;
 const container = document.getElementById('sections-container');
 const navArrows = document.querySelectorAll('.nav-arrow[data-direction]');
+
 
 function updatePosition() {
   container.style.transform = `translate(${-currentX * 100}vw, ${-currentY * 100}vh)`;
 }
 
-// Game controls via nav buttons
+// NEW: Handle game controls via nav buttons
 function handleGameControl(direction) {
   if (!gameActive) return;
   
@@ -761,10 +699,13 @@ function handleSnakeControl(direction) {
 function handleTicTacToeControl(direction) {
   if (!tttGameActive) return;
   
+  // Basic implementation - can be enhanced for grid navigation
   switch(direction) {
     case 'home':
+      // Home button to exit game
       exitGame();
       break;
+    // Add grid navigation logic here if needed
   }
 }
 
@@ -776,25 +717,31 @@ function handleMemoryControl(direction) {
     case 'home':
       exitGame();
       break;
+    // Add grid navigation logic here if needed
   }
 }
 
-// Main navigation function
+
+
+// UPDATED navigate function with dual functionality
 function navigate(direction) {
+  // If game is active, handle game controls instead of navigation
   if (gameActive) {
     handleGameControl(direction);
     return;
   }
   
+  // Original tab switching logic (only when no game is active)
   if (gameKeyboardActive) return;
   
   // ONLY block UP/DOWN on project 1 and 2 (x=1,2 at y=1) and certificates (x=1 at y=0)
   if ((currentX === 1 && currentY === 1) || (currentX === 2 && currentY === 1) || (currentX === 1 && currentY === 0)) {
     if (direction === 'up' || direction === 'down') {
-      return;
+      return; // Don't navigate
     }
   }
   
+  // All other logic NORMAL - unchanged
   if (direction === 'up') {
     if (currentY === 0 && currentX === 0) { currentY = -1; currentX = 0; }
     else if (currentY === -1 || currentY === 1) { currentY = 0; currentX = 0; }
@@ -862,9 +809,10 @@ window.addEventListener('wheel', (e) => {
   }, 100);
 }, { passive: false });
 
-// Keyboard event listener
+// UPDATED keyboard event listener with dual functionality
 document.addEventListener('keydown', (e) => {
   if (gameActive) {
+    // Game controls take priority
     switch(e.key) {
       case 'ArrowUp': e.preventDefault(); handleGameControl('up'); break;
       case 'ArrowDown': e.preventDefault(); handleGameControl('down'); break;
@@ -874,21 +822,25 @@ document.addEventListener('keydown', (e) => {
       case 'Enter': e.preventDefault(); break;
     }
   } else {
+    // Original tab navigation (with your existing game section restrictions)
     if (gameKeyboardActive) return;
     
+    // Disable UP/DOWN on mobile projects ONLY
     const isProject1 = Math.abs(currentX - 1) < 0.1 && Math.abs(currentY - 1) < 0.1;
     const isProject2 = Math.abs(currentX - 2) < 0.1 && Math.abs(currentY - 1) < 0.1;
     const isProject3 = Math.abs(currentX - 3) < 0.1 && Math.abs(currentY - 1) < 0.1;
     const isProjectSection = isProject1 || isProject2 || isProject3;
     const isMobile = window.innerWidth < 1024;
     
+    // Block UP/DOWN on mobile projects
     if (isMobile && isProjectSection) {
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault();
-        return;
+        return; // Don't navigate
       }
     }
     
+    // Normal navigation
     if (e.key === 'ArrowUp') { e.preventDefault(); navigate('up'); }
     if (e.key === 'ArrowDown') { e.preventDefault(); navigate('down'); }
     if (e.key === 'ArrowLeft') { e.preventDefault(); navigate('left'); }
@@ -917,10 +869,6 @@ document.addEventListener('touchend', (e) => {
   }
   hideCursor();
 });
-
-// ============================================
-// CONTENT MANAGEMENT
-// ============================================
 
 function showAbout() {
   document.getElementById('about-content').style.display = 'block';
@@ -959,62 +907,24 @@ document.querySelectorAll('.minimap-cell[data-pos], .game-label[data-pos]').forE
   });
 });
 
-// Home button click handler
-document.querySelector('.nav-arrow.home-btn').addEventListener('click', () => {
-  currentX = 0;
-  currentY = 0;
-  updatePosition();
-  updateMinimap(currentX, currentY);
+updatePosition();
+updateMinimap(0, 0);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  loadingCamera.aspect = window.innerWidth / window.innerHeight;
+  loadingCamera.updateProjectionMatrix();
+  loadingRenderer.setSize(window.innerWidth, window.innerHeight);
+  matrixCanvas.width = window.innerWidth;
+  matrixCanvas.height = window.innerHeight;
 });
 
 // ============================================
-// SCROLL MANAGEMENT
+// GAMES CODE (Snake, Tic-Tac-Toe, Memory) - UPDATED
 // ============================================
 
-let currentScrollElement = null;
-
-document.addEventListener('wheel', (e) => {
-  const isProject1 = currentX === 1 && currentY === 1;
-  const isProject2 = currentX === 2 && currentY === 1;
-  const isCertificate = currentX === 3 && currentY === 1;
-
-  if (!isProject1 && !isProject2 && !isCertificate) return;
-
-  const codeBlock = document.querySelector('.code-block');
-  if (!codeBlock || codeBlock.scrollHeight <= codeBlock.clientHeight) return;
-  
-  e.stopPropagation();
-  codeBlock.scrollTop += e.deltaY;
-}, { passive: false });
-
-document.addEventListener('wheel', (e) => {
-  const isProject1 = currentX === 1 && currentY === 1;
-  const isProject2 = currentX === 2 && currentY === 1;
-  const isCertificate = currentX === 3 && currentY === 1;
-
-  if (isProject1 || isProject2 || isCertificate) {
-    const codeBlock = document.querySelector('.code-block');
-    if (!codeBlock || codeBlock.scrollHeight <= codeBlock.clientHeight) return;
-    
-    e.stopPropagation();
-    codeBlock.scrollTop += e.deltaY;
-    return;
-  }
-  
-  e.preventDefault();
-  clearTimeout(scrollTimeout);
-  scrollTimeout = setTimeout(() => {
-    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-      navigate(e.deltaY > 0 ? 'down' : 'up');
-    } else {
-      navigate(e.deltaX > 0 ? 'right' : 'left');
-    }
-  }, 100);
-}, { passive: false });
-
-// ============================================
-// GAMES CODE (Snake, Tic-Tac-Toe, Memory) - WITH MEMORY CLEANUP
-// ============================================
 
 function initSnakeGame() {
   if (snakeInitialized) return;
@@ -1069,6 +979,7 @@ function startSnakeGame() {
   let snake = [{x: 10, y: 10}];
   let food = {x: 15, y: 15};
   let score = 0;
+  let gameLoop;
   
   currentSnakeDX = 0;
   currentSnakeDY = 0;
@@ -1105,15 +1016,12 @@ function startSnakeGame() {
     ctx.fillStyle = '#ff0';
     ctx.fillRect(food.x * gridSize, food.y * gridSize, gridSize - 2, gridSize - 2);
     
-    currentGameLoop = setTimeout(() => requestAnimationFrame(drawGame), 120);
+    gameLoop = setTimeout(() => requestAnimationFrame(drawGame), 120);
   }
   
   function gameOver() {
     snakeGameRunning = false;
-    if (currentGameLoop) {
-      clearTimeout(currentGameLoop);
-      currentGameLoop = null;
-    }
+    clearTimeout(gameLoop);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#f00';
@@ -1128,33 +1036,30 @@ function startSnakeGame() {
   }
   
   function restartGame() {
-    if (currentGameLoop) {
-      clearTimeout(currentGameLoop);
-      currentGameLoop = null;
-    }
-    startSnakeGame();
+    clearTimeout(gameLoop);
+    startSnakeGame(); // Start fresh game
   }
   
   const controls = (e) => {
     if (e.key === 'Escape') {
-      if (currentGameLoop) {
-        clearTimeout(currentGameLoop);
-        currentGameLoop = null;
-      }
+      // ESC - Exit to menu
+      clearTimeout(gameLoop);
       gameActive = false;
       currentGameType = null;
       gameKeyboardActive = false;
       snakeGameRunning = false;
       snakeInitialized = false;
       document.removeEventListener('keydown', controls);
-      initSnakeGame();
+      initSnakeGame(); // Go back to "Press ENTER" screen
       e.preventDefault();
     }
     else if (e.key === 'r' || e.key === 'R') {
+      // R - Restart game
       restartGame();
       e.preventDefault();
     }
     else if (snakeGameRunning) {
+      // Game controls
       if ((e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') && currentSnakeDY === 0) { 
         currentSnakeDX = 0; currentSnakeDY = -1; e.preventDefault(); 
       }
@@ -1170,16 +1075,12 @@ function startSnakeGame() {
     }
   };
   
-  // Clean up previous controls
-  if (currentGameControls) {
-    document.removeEventListener('keydown', currentGameControls);
-  }
-  
-  currentGameControls = controls;
   document.addEventListener('keydown', controls);
   drawGame();
   updateMobileGameButtons();
 }
+
+
 
 function initTicTacToe() {
   if (tttInitialized) return;
@@ -1228,7 +1129,7 @@ function startTicTacToe() {
   `;
   
   let board = ['', '', '', '', '', '', '', '', ''];
-  let tttGameRunning = true, currentPlayer = 'X';
+  let tttGameRunning = true, currentPlayer = 'X'; // CHANGED: use tttGameRunning instead of gameActive
   const boardEl = document.getElementById('ttt-board');
   
   for (let i = 0; i < 9; i++) {
@@ -1236,7 +1137,7 @@ function startTicTacToe() {
     cell.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 2.5rem; cursor: pointer; transition: all 0.2s;`;
     
     cell.addEventListener('click', () => {
-      if (board[i] !== '' || !tttGameRunning || currentPlayer !== 'X') return;
+      if (board[i] !== '' || !tttGameRunning || currentPlayer !== 'X') return; // CHANGED: use tttGameRunning
       board[i] = 'X';
       updateBoard();
       if (checkWinner('X')) { endGame('🎉 You Win!', '#0f0'); return; }
@@ -1247,7 +1148,8 @@ function startTicTacToe() {
     });
     
     cell.addEventListener('mouseenter', () => {
-      if (board[i] === '' && tttGameRunning && currentPlayer === 'X') cell.style.background = 'rgba(0, 255, 0, 0.25)';
+      showcursor
+      if (board[i] === '' && tttGameRunning && currentPlayer === 'X') cell.style.background = 'rgba(0, 255, 0, 0.25)'; // CHANGED: use tttGameRunning
     });
     cell.addEventListener('mouseleave', () => {
       hideCursor();
@@ -1298,7 +1200,7 @@ function startTicTacToe() {
   }
   
   function endGame(message, color) {
-    tttGameRunning = false;
+    tttGameRunning = false; // CHANGED: use tttGameRunning
     tttGameActive = false;
     document.getElementById('ttt-status').textContent = message;
     document.getElementById('ttt-status').style.color = color;
@@ -1306,7 +1208,7 @@ function startTicTacToe() {
   
   function restart() {
     board = ['', '', '', '', '', '', '', '', ''];
-    tttGameRunning = true;
+    tttGameRunning = true; // CHANGED: use tttGameRunning
     tttGameActive = true;
     currentPlayer = 'X';
     updateBoard();
@@ -1327,13 +1229,6 @@ function startTicTacToe() {
     }
     if (e.key === 'r' || e.key === 'R') { restart(); e.preventDefault(); }
   };
-  
-  // Clean up previous controls
-  if (currentTTTControls) {
-    document.removeEventListener('keydown', currentTTTControls);
-  }
-  
-  currentTTTControls = controls;
   document.addEventListener('keydown', controls);
   updateMobileGameButtons();
 }
@@ -1376,7 +1271,7 @@ function startMemoryGame() {
   const emojis = ['🎮', '🎯', '🎲', '🎪', '🎨', '🎭', '🎬', '🎸'];
   const cards = [...emojis, ...emojis].sort(() => Math.random() - 0.5);
   
-  let flipped = [], matched = [], moves = 0, canClick = true, timeLeft = 30;
+  let flipped = [], matched = [], moves = 0, canClick = true, timeLeft = 30, timerInterval;
   
   content.innerHTML = `
     <div><span class="prompt">root@ammz:~/games/memory$</span> python3 memory.py</div>
@@ -1417,10 +1312,7 @@ function startMemoryGame() {
           canClick = true;
           
           if (matched.length === 8) {
-            if (currentMemoryTimer) {
-              clearInterval(currentMemoryTimer);
-              currentMemoryTimer = null;
-            }
+            clearInterval(timerInterval);
             memoryGameActive = false;
             setTimeout(() => {
               document.getElementById('mem-timer').parentElement.innerHTML = 
@@ -1443,12 +1335,7 @@ function startMemoryGame() {
     boardEl.appendChild(card);
   });
   
-  // Clear previous timer
-  if (currentMemoryTimer) {
-    clearInterval(currentMemoryTimer);
-  }
-  
-  currentMemoryTimer = setInterval(() => {
+  timerInterval = setInterval(() => {
     timeLeft--;
     const timerEl = document.getElementById('mem-timer');
     timerEl.textContent = timeLeft + 's';
@@ -1457,8 +1344,7 @@ function startMemoryGame() {
     if (timeLeft <= 5) timerEl.style.color = '#f00';
     
     if (timeLeft <= 0) {
-      clearInterval(currentMemoryTimer);
-      currentMemoryTimer = null;
+      clearInterval(timerInterval);
       canClick = false;
       memoryGameActive = false;
       document.getElementById('mem-timer').parentElement.innerHTML = 
@@ -1466,114 +1352,108 @@ function startMemoryGame() {
     }
   }, 1000);
   
-  function restart() {
-    // Clear current timer
-    if (currentMemoryTimer) {
-      clearInterval(currentMemoryTimer);
-      currentMemoryTimer = null;
-    }
+  // SIMPLE RESTART FUNCTION
+// In startMemoryGame() - replace the restart function with:
+function restart() {
+  // Clear the current timer
+  clearInterval(timerInterval);
+  
+  // RESTART the game - don't exit, just reset
+  gameActive = true;
+  currentGameType = 'memory';
+  gameKeyboardActive = true;
+  memoryGameActive = true;
+  
+  // Reset game variables
+  flipped = [];
+  matched = [];
+  moves = 0;
+  canClick = true;
+  timeLeft = 30;
+  
+  // Update UI
+  document.getElementById('mem-moves').textContent = '0';
+  document.getElementById('mem-matched').textContent = '0/8';
+  document.getElementById('mem-timer').textContent = '30s';
+  document.getElementById('mem-timer').style.color = '#0f0';
+  
+  // Clear the board and recreate cards
+  boardEl.innerHTML = '';
+  cards.sort(() => Math.random() - 0.5);
+  
+  cards.forEach((emoji) => {
+    const card = document.createElement('div');
+    card.dataset.emoji = emoji;
+    card.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 2rem; cursor: pointer; transition: all 0.3s;`;
+    card.textContent = '?';
     
-    gameActive = true;
-    currentGameType = 'memory';
-    gameKeyboardActive = true;
-    memoryGameActive = true;
-    
-    // Reset game variables
-    flipped = [];
-    matched = [];
-    moves = 0;
-    canClick = true;
-    timeLeft = 30;
-    
-    // Update UI
-    document.getElementById('mem-moves').textContent = '0';
-    document.getElementById('mem-matched').textContent = '0/8';
-    document.getElementById('mem-timer').textContent = '30s';
-    document.getElementById('mem-timer').style.color = '#0f0';
-    
-    // Clear the board and recreate cards
-    boardEl.innerHTML = '';
-    cards.sort(() => Math.random() - 0.5);
-    
-    cards.forEach((emoji) => {
-      const card = document.createElement('div');
-      card.dataset.emoji = emoji;
-      card.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 2rem; cursor: pointer; transition: all 0.3s;`;
-      card.textContent = '?';
+    card.addEventListener('click', () => {
+      if (!canClick || flipped.includes(card) || matched.includes(card.dataset.emoji)) return;
       
-      card.addEventListener('click', () => {
-        if (!canClick || flipped.includes(card) || matched.includes(card.dataset.emoji)) return;
+      card.textContent = card.dataset.emoji;
+      card.style.background = 'rgba(0, 255, 0, 0.3)';
+      flipped.push(card);
+      
+      if (flipped.length === 2) {
+        canClick = false;
+        moves++;
+        document.getElementById('mem-moves').textContent = moves;
         
-        card.textContent = card.dataset.emoji;
-        card.style.background = 'rgba(0, 255, 0, 0.3)';
-        flipped.push(card);
+        const [card1, card2] = flipped;
         
-        if (flipped.length === 2) {
-          canClick = false;
-          moves++;
-          document.getElementById('mem-moves').textContent = moves;
+        if (card1.dataset.emoji === card2.dataset.emoji) {
+          matched.push(card1.dataset.emoji);
+          document.getElementById('mem-matched').textContent = `${matched.length}/8`;
+          flipped = [];
+          canClick = true;
           
-          const [card1, card2] = flipped;
-          
-          if (card1.dataset.emoji === card2.dataset.emoji) {
-            matched.push(card1.dataset.emoji);
-            document.getElementById('mem-matched').textContent = `${matched.length}/8`;
+          if (matched.length === 8) {
+            clearInterval(timerInterval);
+            memoryGameActive = false;
+            setTimeout(() => {
+              document.getElementById('mem-timer').parentElement.innerHTML = 
+                `<span style="color: #0f0;">🎉 Won in ${moves} moves with ${timeLeft}s left!</span> | <span style="color: #0f08;">ESC=exit</span>`;
+            }, 300);
+          }
+        } else {
+          setTimeout(() => {
+            card1.textContent = '?';
+            card2.textContent = '?';
+            card1.style.background = 'rgba(0, 255, 0, 0.1)';
+            card2.style.background = 'rgba(0, 255, 0, 0.1)';
             flipped = [];
             canClick = true;
-            
-            if (matched.length === 8) {
-              if (currentMemoryTimer) {
-                clearInterval(currentMemoryTimer);
-                currentMemoryTimer = null;
-              }
-              memoryGameActive = false;
-              setTimeout(() => {
-                document.getElementById('mem-timer').parentElement.innerHTML = 
-                  `<span style="color: #0f0;">🎉 Won in ${moves} moves with ${timeLeft}s left!</span> | <span style="color: #0f08;">ESC=exit</span>`;
-              }, 300);
-            }
-          } else {
-            setTimeout(() => {
-              card1.textContent = '?';
-              card2.textContent = '?';
-              card1.style.background = 'rgba(0, 255, 0, 0.1)';
-              card2.style.background = 'rgba(0, 255, 0, 0.1)';
-              flipped = [];
-              canClick = true;
-            }, 800);
-          }
+          }, 800);
         }
-      });
-      
-      boardEl.appendChild(card);
+      }
     });
     
-    // Start new timer
-    currentMemoryTimer = setInterval(() => {
-      timeLeft--;
-      const timerEl = document.getElementById('mem-timer');
-      timerEl.textContent = timeLeft + 's';
-      
-      if (timeLeft <= 10) timerEl.style.color = '#ff0';
-      if (timeLeft <= 5) timerEl.style.color = '#f00';
-      
-      if (timeLeft <= 0) {
-        clearInterval(currentMemoryTimer);
-        currentMemoryTimer = null;
-        canClick = false;
-        memoryGameActive = false;
-        document.getElementById('mem-timer').parentElement.innerHTML = 
-          `<span style="color: #f00;">⏰ Time's Up!</span> | <span style="color: #0f08;">R=retry ESC=exit</span>`;
-      }
-    }, 1000);
-  }
+    boardEl.appendChild(card);
+  });
   
+  // Start new timer
+  timerInterval = setInterval(() => {
+    timeLeft--;
+    const timerEl = document.getElementById('mem-timer');
+    timerEl.textContent = timeLeft + 's';
+    
+    if (timeLeft <= 10) timerEl.style.color = '#ff0';
+    if (timeLeft <= 5) timerEl.style.color = '#f00';
+    
+    if (timeLeft <= 0) {
+      clearInterval(timerInterval);
+      canClick = false;
+      memoryGameActive = false;
+      document.getElementById('mem-timer').parentElement.innerHTML = 
+        `<span style="color: #f00;">⏰ Time's Up!</span> | <span style="color: #0f08;">R=retry ESC=exit</span>`;
+    }
+  }, 1000);
+}
+  
+  // SIMPLE CONTROLS - just use the existing global keyboard handler
   const controls = (e) => {
     if (e.key === 'Escape') {
-      if (currentMemoryTimer) {
-        clearInterval(currentMemoryTimer);
-        currentMemoryTimer = null;
-      }
+      clearInterval(timerInterval);
       gameKeyboardActive = false;
       gameActive = false;
       currentGameType = null;
@@ -1589,18 +1469,70 @@ function startMemoryGame() {
     }
   };
   
-  // Clean up previous controls
-  if (currentMemoryControls) {
-    document.removeEventListener('keydown', currentMemoryControls);
-  }
-  
-  currentMemoryControls = controls;
   document.addEventListener('keydown', controls);
   updateMobileGameButtons();
 }
 
+// Home button click handler
+document.querySelector('.nav-arrow.home-btn').addEventListener('click', () => {
+  currentX = 0;
+  currentY = 0;
+  updatePosition();
+  updateMinimap(currentX, currentY);
+});
+
+// Scrollable content for projects
+let currentScrollElement = null;
+
+document.addEventListener('wheel', (e) => {
+  // Check if we're in project 1 or 2
+  const isProject1 = currentX === 1 && currentY === 1;
+  const isProject2 = currentX === 2 && currentY === 1;
+  const isCertificate = currentX === 3 && currentY === 1;
+
+  if (!isProject1 && !isProject2 && !isCertificate) return;
+
+  // Find the scrollable code block
+  const codeBlock = document.querySelector('.code-block');
+  if (!codeBlock || codeBlock.scrollHeight <= codeBlock.clientHeight) return;
+  
+  // Allow scrolling inside project
+  e.stopPropagation();
+  codeBlock.scrollTop += e.deltaY;
+}, { passive: false });
+
+
+document.addEventListener('wheel', (e) => {
+  // Check if we're in project 1, 2, or certificates - USE EXACT SAME PATTERN AS P1/P2
+  const isProject1 = currentX === 1 && currentY === 1;
+  const isProject2 = currentX === 2 && currentY === 1;
+  const isCertificate = currentX === 3 && currentY === 1;
+
+  if (isProject1 || isProject2 || isCertificate) {
+    // Find the scrollable code block
+    const codeBlock = document.querySelector('.code-block');
+    if (!codeBlock || codeBlock.scrollHeight <= codeBlock.clientHeight) return;
+    
+    // Allow scrolling inside project - EXACT SAME AS P1/P2
+    e.stopPropagation();
+    codeBlock.scrollTop += e.deltaY;
+    return;
+  }
+  
+  // Original navigation for other sections - YOUR EXISTING CODE
+  e.preventDefault();
+  clearTimeout(scrollTimeout);
+  scrollTimeout = setTimeout(() => {
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      navigate(e.deltaY > 0 ? 'down' : 'up');
+    } else {
+      navigate(e.deltaX > 0 ? 'right' : 'left');
+    }
+  }, 100);
+}, { passive: false });
+
 // ============================================
-// CERTIFICATE SYSTEM
+// FIXED CERTIFICATE SYSTEM - ONLY IN CERTIFICATES TAB
 // ============================================
 
 const certImageMap = {
@@ -1616,8 +1548,10 @@ let hoverTimeout = null;
 let currentCertPopup = null;
 
 function setupCertificates() {
+  // Only setup in certificates tab (x=1, y=0)
   if (currentX !== 1 || currentY !== 0) return;
   
+  // Clear any existing
   if (currentCertImage) {
     currentCertImage.remove();
     currentCertImage = null;
@@ -1630,12 +1564,15 @@ function setupCertificates() {
   const certCards = document.querySelectorAll('.cert-card');
   
   certCards.forEach(card => {
+    // Remove all existing events
     card.replaceWith(card.cloneNode(true));
   });
   
+  // Re-get cards after clone
   document.querySelectorAll('.cert-card').forEach(card => {
     card.style.cursor = 'pointer';
     
+    // Desktop hover
     if (window.innerWidth > 768) {
       card.addEventListener('mouseenter', function() {
         clearTimeout(hoverTimeout);
@@ -1680,6 +1617,7 @@ function setupCertificates() {
       });
     }
     
+    // Click for both mobile and desktop
     card.addEventListener('click', function(e) {
       e.preventDefault();
       const certName = this.getAttribute('data-cert');
@@ -1691,6 +1629,7 @@ function setupCertificates() {
 }
 
 function showCertPopup(certName, cardElement) {
+  // Close existing popup
   if (currentCertPopup) {
     currentCertPopup.remove();
     currentCertPopup = null;
@@ -1698,9 +1637,11 @@ function showCertPopup(certName, cardElement) {
   
   const isMobile = window.innerWidth <= 768;
   
+  // Calculate safe dimensions
   const safeWidth = isMobile ? '90%' : '450px';
   const safeMaxHeight = isMobile ? '50vh' : '60vh';
   
+  // Create popup
   currentCertPopup = document.createElement('div');
   currentCertPopup.style.cssText = `
     position: fixed;
@@ -1719,6 +1660,7 @@ function showCertPopup(certName, cardElement) {
     font-family: 'JetBrains Mono', monospace;
   `;
   
+  // Header with X button
   const header = document.createElement('div');
   header.style.cssText = `
     display: flex;
@@ -1757,6 +1699,7 @@ function showCertPopup(certName, cardElement) {
   header.appendChild(title);
   header.appendChild(closeBtn);
   
+  // Content
   const content = document.createElement('div');
   content.style.cssText = `
     padding: 1rem;
@@ -1792,6 +1735,7 @@ function showCertPopup(certName, cardElement) {
   currentCertPopup.appendChild(content);
   document.body.appendChild(currentCertPopup);
   
+  // Close functions
   function closePopup() {
     if (currentCertPopup) {
       currentCertPopup.remove();
@@ -1801,10 +1745,12 @@ function showCertPopup(certName, cardElement) {
   
   closeBtn.addEventListener('click', closePopup);
   
+  // Close on backdrop click
   currentCertPopup.addEventListener('click', (e) => {
     if (e.target === currentCertPopup) closePopup();
   });
   
+  // ESC key
   function handleKeydown(e) {
     if (e.key === 'Escape' && currentCertPopup) {
       closePopup();
@@ -1812,6 +1758,7 @@ function showCertPopup(certName, cardElement) {
   }
   document.addEventListener('keydown', handleKeydown);
   
+  // Mobile swipe down
   if (isMobile) {
     let startY = 0;
     currentCertPopup.addEventListener('touchstart', (e) => {
@@ -1827,10 +1774,12 @@ function showCertPopup(certName, cardElement) {
   }
 }
 
+// Initialize only when in certificates tab
 function checkAndSetupCertificates() {
   if (currentX === 1 && currentY === 0) {
     setTimeout(setupCertificates, 100);
   } else {
+    // Clean up if leaving certificates tab
     if (currentCertImage) {
       currentCertImage.remove();
       currentCertImage = null;
@@ -1842,76 +1791,31 @@ function checkAndSetupCertificates() {
   }
 }
 
+// Replace the updateMinimap to handle certificates
 const originalUpdateMinimap = updateMinimap;
 updateMinimap = function(x, y) {
   originalUpdateMinimap(x, y);
   checkAndSetupCertificates();
 };
 
-// ============================================
-// WINDOW RESIZE HANDLING
-// ============================================
-
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  loadingCamera.aspect = window.innerWidth / window.innerHeight;
-  loadingCamera.updateProjectionMatrix();
-  loadingRenderer.setSize(window.innerWidth, window.innerHeight);
-  matrixCanvas.width = window.innerWidth;
-  matrixCanvas.height = window.innerHeight;
-});
-
-// ============================================
-// MEMORY CLEANUP ON PAGE UNLOAD
-// ============================================
-
-window.addEventListener('beforeunload', () => {
-  // Clear all intervals and timeouts
-  if (matrixInterval) clearInterval(matrixInterval);
-  if (currentGameLoop) clearTimeout(currentGameLoop);
-  if (currentMemoryTimer) clearInterval(currentMemoryTimer);
-  
-  // Cancel animation frames
-  if (loadingAnimationId) cancelAnimationFrame(loadingAnimationId);
-  if (mainAnimationId) cancelAnimationFrame(mainAnimationId);
-  
-  // Remove event listeners
-  if (currentGameControls) {
-    document.removeEventListener('keydown', currentGameControls);
-  }
-  if (currentTTTControls) {
-    document.removeEventListener('keydown', currentTTTControls);
-  }
-  if (currentMemoryControls) {
-    document.removeEventListener('keydown', currentMemoryControls);
-  }
-  
-  // Clean up Three.js resources
-  threeSceneObjects.forEach(obj => {
-    if (obj.geometry) obj.geometry.dispose();
-    if (obj.material) {
-      if (Array.isArray(obj.material)) {
-        obj.material.forEach(m => m.dispose());
-      } else {
-        obj.material.dispose();
-      }
-    }
-  });
-  
-  // Clear WebGL contexts
-  if (matrixCtx) {
-    matrixCanvas.width = 1;
-    matrixCanvas.height = 1;
-  }
-});
-
-// ============================================
-// INITIALIZATION
-// ============================================
-
-updatePosition();
-updateMinimap(0, 0);
-setupMobileGameButtons();
+// Initial setup
 setTimeout(checkAndSetupCertificates, 1000);
+
+
+
+
+document.addEventListener('click', (e) => {
+  if (e.target.matches('button, a, [onclick], .cmd-button, .game-control-btn, .nav-arrow, .minimap-cell, .terminal-btn, .lang-btn, .project-menu-btn, .cert-card')) {
+    setTimeout(hideCursor, 0);
+  }
+});
+
+
+document.addEventListener('touchend', (e) => {
+  setTimeout(hideCursor, 0);
+});
+
+
+
+
+setupMobileGameButtons();
