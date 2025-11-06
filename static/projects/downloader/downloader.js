@@ -39,6 +39,161 @@ function setProgress(percent) {
     progressRing.style.strokeDashoffset = offset;
 }  
 
+
+// Enhanced Creator Badge Functionality
+function initCreatorBadge() {
+    const creatorBtn = document.getElementById('creatorBtn');
+    const creatorTooltip = document.getElementById('creatorTooltip');
+    
+    if (!creatorBtn || !creatorTooltip) return;
+    
+    let tooltipVisible = false;
+    let isMobile = window.innerWidth <= 640;
+    let closeTimeout;
+
+    // Function to show tooltip
+    function showTooltip() {
+        if (closeTimeout) clearTimeout(closeTimeout);
+        
+        creatorTooltip.classList.add('active');
+        tooltipVisible = true;
+        
+        if (isMobile) {
+            document.body.classList.add('tooltip-open');
+        }
+    }
+
+    // Function to hide tooltip
+    function hideTooltip() {
+        creatorTooltip.classList.remove('active');
+        tooltipVisible = false;
+        document.body.classList.remove('tooltip-open');
+    }
+
+    // Function to toggle tooltip
+    function toggleTooltip() {
+        if (tooltipVisible) {
+            hideTooltip();
+        } else {
+            showTooltip();
+        }
+    }
+
+    // Desktop: Show on hover
+    creatorBtn.addEventListener('mouseenter', function() {
+        if (!isMobile) {
+            showTooltip();
+        }
+    });
+
+    creatorBtn.addEventListener('mouseleave', function() {
+        if (!isMobile) {
+            closeTimeout = setTimeout(hideTooltip, 300);
+        }
+    });
+
+    // Keep tooltip open when hovering over it (desktop)
+    creatorTooltip.addEventListener('mouseenter', function() {
+        if (!isMobile && closeTimeout) {
+            clearTimeout(closeTimeout);
+        }
+    });
+
+    creatorTooltip.addEventListener('mouseleave', function() {
+        if (!isMobile) {
+            closeTimeout = setTimeout(hideTooltip, 300);
+        }
+    });
+
+    // Mobile: Toggle on click
+    creatorBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (isMobile) {
+            toggleTooltip();
+        }
+    });
+
+    // Close tooltip when clicking outside (both mobile and desktop)
+    document.addEventListener('click', function(e) {
+        if (tooltipVisible && 
+            !creatorBtn.contains(e.target) && 
+            !creatorTooltip.contains(e.target)) {
+            hideTooltip();
+        }
+    });
+
+    // Close tooltip on escape key
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && tooltipVisible) {
+            hideTooltip();
+        }
+    });
+
+    // Close tooltip on scroll (mobile)
+    window.addEventListener('scroll', function() {
+        if (tooltipVisible && isMobile) {
+            hideTooltip();
+        }
+    });
+
+    // Update mobile detection on resize
+    window.addEventListener('resize', function() {
+        isMobile = window.innerWidth <= 640;
+        if (!isMobile && tooltipVisible) {
+            hideTooltip();
+        }
+    });
+}
+
+// Portfolio functionality
+function openPortfolio() {
+    // Close tooltip first
+    const creatorTooltip = document.getElementById('creatorTooltip');
+    if (creatorTooltip) {
+        creatorTooltip.classList.remove('active');
+        document.body.classList.remove('tooltip-open');
+    }
+    
+    // You can replace this URL with your actual portfolio link
+    const portfolioUrl = 'https://github.com/whoamiSir'; // Example URL
+    window.open(portfolioUrl, '_blank', 'noopener,noreferrer');
+}
+
+// Enhanced social media links
+function initSocialLinks() {
+    const socialLinks = document.querySelectorAll('.social-link');
+    socialLinks.forEach(link => {
+        link.setAttribute('target', '_blank');
+        link.setAttribute('rel', 'noopener noreferrer');
+        
+        // Add click handler to close tooltip
+        link.addEventListener('click', function() {
+            const creatorTooltip = document.getElementById('creatorTooltip');
+            if (creatorTooltip) {
+                creatorTooltip.classList.remove('active');
+                document.body.classList.remove('tooltip-open');
+            }
+        });
+    });
+}
+
+// Initialize when DOM is loaded
+document.addEventListener('DOMContentLoaded', function() {
+    initCreatorBadge();
+    initSocialLinks();
+});
+
+// Also initialize if DOM is already loaded
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+        initCreatorBadge();
+        initSocialLinks();
+    });
+} else {
+    initCreatorBadge();
+    initSocialLinks();
+}
+
 // Smooth Sticky Header
 (function() {
     'use strict';

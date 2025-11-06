@@ -107,7 +107,6 @@ body {
     100% { background-position: -200% 0; }
 }
 
-/* Creator badge */
 .creator-badge {
     position: fixed;
     bottom: 20px;
@@ -118,16 +117,55 @@ body {
 .creator-tooltip {
     opacity: 0;
     visibility: hidden;
-    transform: translateY(10px);
-    transition: all 0.3s ease;
+    transform: translateY(10px) scale(0.95);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     pointer-events: none;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 }
 
-.creator-badge:hover .creator-tooltip {
+.creator-tooltip.active {
     opacity: 1;
     visibility: visible;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
     pointer-events: auto;
+}
+
+.creator-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    right: 20px;
+    border: 8px solid transparent;
+    border-top-color: white;
+}
+
+/* Portfolio button hover effects */
+.portfolio-btn {
+    background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+    transition: all 0.3s ease;
+}
+
+.portfolio-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(139, 92, 246, 0.4);
+}
+
+/* Social link hover animations */
+.social-link {
+    transition: all 0.3s ease;
+}
+
+.social-link:hover {
+    transform: translateY(-2px) scale(1.1);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+/* Prevent body scroll when tooltip is open on mobile */
+body.tooltip-open {
+    overflow: hidden;
 }
 
 /* Top Marquee - Always on top */
@@ -333,22 +371,25 @@ body.sticky-header-active {
         grid-template-columns: 1fr !important;
     }
 
-    /* Creator badge mobile positioning */
     .creator-badge {
-        bottom: 10px;
-        right: 10px;
+        bottom: 15px;
+        right: 15px;
     }
-
-    .creator-badge button {
-        width: 3rem !important;
-        height: 3rem !important;
-    }
-
+    
     .creator-tooltip {
-        width: 16rem !important;
+        width: 280px !important;
         right: 0;
         bottom: 100%;
-        margin-bottom: 0.5rem;
+        margin-bottom: 15px;
+    }
+    
+    .creator-tooltip::after {
+        right: 20px;
+    }
+    
+    #creatorBtn {
+        width: 3.5rem;
+        height: 3.5rem;
     }
 
     /* Thumbnail preview */

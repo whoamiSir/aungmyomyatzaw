@@ -59,29 +59,41 @@
       <div></div>
     </div>
   </div>
-
-  <!-- Loading Screen -->
-  <div id="loading-screen">
-    <canvas id="loading-canvas"></canvas>
-    <div class="loading-content">
-      <div class="loading-logo">AMMZ</div>
-      <div id="lang-selector">
-        <div style="font-size: clamp(0.9rem, 2vw, 1.2rem); color: #0f0; margin-bottom: 1rem;">
-          Select Language / <span style="font-family: 'Padauk', sans-serif;">ဘာသာစကားရွေးချယ်ပါ</span>
+  
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+      <canvas id="loading-canvas"></canvas>
+      <div class="loading-content">
+        <div class="loading-terminal-box">
+          <div class="loading-terminal-header">
+            <div class="loading-terminal-dots">
+              <span></span><span></span><span></span>
+            </div>
+            <span style="font-size: 0.7rem; opacity: 0.6;">root@ammz:~</span>
+          </div>
+          <div class="loading-terminal-body">
+            <div class="loading-line">
+              <span class="loading-prompt">root@ammz:~$</span> 
+              <span class="loading-typing">initializing portfolio...</span>
+            </div>
+            <div class="loading-progress-container">
+              <div class="loading-progress-bar">
+                <div class="loading-progress-fill" id="progress-bar"></div>
+              </div>
+              <div class="loading-percentage" id="loading-percentage">0%</div>
+            </div>
+            <div id="loading-text" class="loading-status">
+              <span class="loading-prompt">root@ammz:~$</span> <span id="status-text">Loading assets...</span>
+            </div>
+            <div class="loading-cursor-line">
+              <span class="loading-prompt">root@ammz:~$</span> 
+              <span class="loading-cursor-blink">█</span>
+            </div>
+          </div>
         </div>
-        <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;">
-          <button class="lang-btn" onclick="selectLanguage('en')">🇬🇧 English</button>
-          <button class="lang-btn" onclick="selectLanguage('mm')" style="font-family: 'Padauk', sans-serif;">🇲🇲 မြန်မာ</button>
-        </div>
-      </div>
-      <div id="loading-progress" style="display: none;">
-        <div class="progress-bar">
-          <div class="progress-fill" id="progress-bar"></div>
-        </div>
-        <div id="loading-text" style="margin-top: 1rem; color: #0f0;"></div>
       </div>
     </div>
-  </div>
+
 
   <!-- Sections Container -->
   <div class="sections-container" id="sections-container">
@@ -517,7 +529,7 @@
           </div>
             <div style="margin-top: 1.5rem; margin-top: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.8rem; justify-content: center ">
             <a href="https://t.me/ytdownloaderbyammz_bot" class="cmd-button" target="_blank" style="flex: 1; min-width: 120px; text-align: center;">🤖 Try Bot</a>
-            <a href="https://tempmail.aungmyomyatzaw.online/projects/downloader" target="_blank" class="cmd-button" style="flex: 1; min-width: 120px; text-align: center;">🚀 Launch App</a>
+            <a href="https://aungmyomyatzaw.online/downloader" target="_blank" class="cmd-button" style="flex: 1; min-width: 120px; text-align: center;">🚀 Launch App</a>
             <a href="https://github.com/whoamiSir/aungmyomyatzaw/tree/main/static/projects/downloader" class="cmd-button" target="_blank" style="flex: 1; min-width: 120px; text-align: center;">📂 Code</a>
           </div>
           <div style="margin: 1.5rem 0;">
@@ -572,7 +584,7 @@
             </div>
           <div style="margin-top: 1.5rem; margin-top: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.8rem; justify-content: center ">
             <a href="https://t.me/ytdownloaderbyammz_bot" class="cmd-button" target="_blank" style="flex: 1; min-width: 120px; text-align: center;">🤖 Try Bot</a>
-            <a href="https://tempmail.aungmyomyatzaw.online/projects/downloader" target="_blank" class="cmd-button" style="flex: 1; min-width: 120px; text-align: center;">🚀 Launch App</a>
+            <a href="https://aungmyomyatzaw.online/downloader" target="_blank" class="cmd-button" style="flex: 1; min-width: 120px; text-align: center;">🚀 Launch App</a>
             <a href="https://github.com/whoamiSir/aungmyomyatzaw/tree/main/static/projects/downloader" class="cmd-button" target="_blank" style="flex: 1; min-width: 120px; text-align: center;">📂 Code</a>
           </div>
           </div>

@@ -1,5 +1,3 @@
-let selectedLanguage = 'en';
-
 // Game state tracking
 let gameActive = false;
 let currentGameType = null; // 'snake', 'tictactoe', 'memory'
@@ -11,12 +9,19 @@ let memoryGameActive = false;
 let snakeInitialized = false;
 let tttInitialized = false;
 let memInitialized = false;
+
 // Snake game variables
 let currentSnakeDX = 0, currentSnakeDY = 0;
 let cursorVisible = true;
 let cursorTimeout;
 let connectionLines = null;
 let loadingAnimationId = null;
+
+let isHomeVisible = false;
+let mainAnimationId = null;
+let matrixAnimationId = null;
+
+
 
 function showCursor() {
   if (!cursorVisible) {
@@ -43,11 +48,80 @@ function forceHideCursor() {
 }
 
 hideCursor();
+4
 
 // Hide cursor after any button click or interaction
 document.addEventListener('click', () => {
   setTimeout(hideCursor, 500); // Hide after 0.5 seconds
 });
+
+// Portfolio functionality
+function openPortfolio() {
+    // You can replace this URL with your actual portfolio link
+    const portfolioUrl = 'https://github.com/whoamiSir'; // Example URL
+    window.open(portfolioUrl, '_blank', 'noopener,noreferrer');
+}
+
+// Initialize creator badge functionality
+function initCreatorBadge() {
+    const creatorBtn = document.getElementById('creatorBtn');
+    const creatorTooltip = document.querySelector('.creator-tooltip');
+    
+    if (creatorBtn && creatorTooltip) {
+        // Toggle tooltip on click for mobile
+        creatorBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const isVisible = creatorTooltip.style.opacity === '1';
+            
+            if (isVisible) {
+                hideCreatorTooltip();
+            } else {
+                showCreatorTooltip();
+            }
+        });
+        
+        // Hide tooltip when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!creatorBtn.contains(e.target) && !creatorTooltip.contains(e.target)) {
+                hideCreatorTooltip();
+            }
+        });
+        
+        // Hide tooltip on scroll
+        window.addEventListener('scroll', function() {
+            hideCreatorTooltip();
+        });
+    }
+}
+
+function showCreatorTooltip() {
+    const creatorTooltip = document.querySelector('.creator-tooltip');
+    if (creatorTooltip) {
+        creatorTooltip.style.opacity = '1';
+        creatorTooltip.style.visibility = 'visible';
+        creatorTooltip.style.transform = 'translateY(0)';
+        creatorTooltip.style.pointerEvents = 'auto';
+    }
+}
+
+function hideCreatorTooltip() {
+    const creatorTooltip = document.querySelector('.creator-tooltip');
+    if (creatorTooltip) {
+        creatorTooltip.style.opacity = '0';
+        creatorTooltip.style.visibility = 'hidden';
+        creatorTooltip.style.transform = 'translateY(10px)';
+        creatorTooltip.style.pointerEvents = 'none';
+    }
+}
+
+// Enhanced social media links with proper attributes
+function initSocialLinks() {
+    const socialLinks = document.querySelectorAll('.creator-tooltip a');
+    socialLinks.forEach(link => {
+        link.setAttribute('target', '_blank');
+        link.setAttribute('rel', 'noopener noreferrer');
+    });
+}
 
 // Specifically for your game control buttons
 document.addEventListener('click', (e) => {
@@ -334,43 +408,104 @@ function createSnowParticle(x, y) {
 }
 
 
-function selectLanguage(lang) {
-  selectedLanguage = lang;
-  document.getElementById('lang-selector').style.display = 'none';
-  document.getElementById('loading-progress').style.display = 'block';
-  document.getElementById('loading-text').textContent = lang === 'en' ? 'Loading...' : 'တင်နေသည်...';
+// ============================================
+// LOADING SCREEN - SIMPLE & WORKING
+// ============================================
+window.addEventListener('DOMContentLoaded', () => {
+  // Simple canvas animation (fallback to just showing the screen if Three.js fails)
+  const loadingCanvas = document.getElementById('loading-canvas');
+  const ctx = loadingCanvas ? loadingCanvas.getContext('2d') : null;
+  
+  if (ctx) {
+    loadingCanvas.width = window.innerWidth;
+    loadingCanvas.height = window.innerHeight;
+    
+    // Matrix rain effect
+    const chars = '01アイウエオカキクケコサシスセソABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const fontSize = 14;
+    const columns = Math.floor(loadingCanvas.width / fontSize);
+    const drops = Array(columns).fill(1);
+    
+    function drawMatrix() {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+      ctx.fillRect(0, 0, loadingCanvas.width, loadingCanvas.height);
+      
+      ctx.fillStyle = '#0f0';
+      ctx.font = fontSize + 'px monospace';
+      
+      for (let i = 0; i < drops.length; i++) {
+        const text = chars[Math.floor(Math.random() * chars.length)];
+        ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+        
+        if (drops[i] * fontSize > loadingCanvas.height && Math.random() > 0.975) {
+          drops[i] = 0;
+        }
+        drops[i]++;
+      }
+    }
+    
+    const matrixInterval = setInterval(drawMatrix, 50);
+    
+    // Clear interval when loading is done
+    setTimeout(() => clearInterval(matrixInterval), 5000);
+  }
+  
+  // Start loading progress
+  startLoading();
+});
+
+function startLoading() {
+  const progressBar = document.getElementById('progress-bar');
+  const percentage = document.getElementById('loading-percentage');
+  const statusText = document.getElementById('status-text');
+  const loadingScreen = document.getElementById('loading-screen');
+  
+  if (!progressBar || !percentage || !statusText) {
+    console.error('Loading elements not found');
+    return;
+  }
   
   let progress = 0;
+  const statuses = [
+    'Loading assets...',
+    'Initializing terminal...',
+    'Loading portfolio data...',
+    'Configuring environment...',
+    'Setting up projects...',
+    'Almost there...',
+    'Ready!'
+  ];
+  
   const interval = setInterval(() => {
-    progress += Math.random() * 20;
-    if(progress >= 100) {
+    progress += Math.random() * 15;
+    
+    if (progress >= 100) {
       progress = 100;
       clearInterval(interval);
+      
+      progressBar.style.width = '100%';
+      percentage.textContent = '100%';
+      statusText.textContent = 'Ready!';
+      
+      // Fade out loading screen
       setTimeout(() => {
-        document.getElementById('loading-screen').classList.add('hidden');
-        
-        // CLEANUP LOADING ANIMATION
-        if (loadingAnimationId) {
-          cancelAnimationFrame(loadingAnimationId);
-          loadingAnimationId = null;
-        }
-        
-        // Dispose loading scene
-        if (particlesGeometry) {
-          particlesGeometry.dispose();
-        }
-        if (particlesMaterial) {
-          particlesMaterial.dispose();
-        }
-        if (loadingRenderer) {
-          loadingRenderer.dispose();
-          loadingRenderer.forceContextLoss();
-        }
-      }, 500);
+        loadingScreen.style.opacity = '0';
+        setTimeout(() => {
+          loadingScreen.style.display = 'none';
+        }, 500);
+      }, 800);
+    } else {
+      progressBar.style.width = progress + '%';
+      percentage.textContent = Math.floor(progress) + '%';
+      
+      // Update status text based on progress
+      const statusIndex = Math.floor((progress / 100) * (statuses.length - 1));
+      statusText.textContent = statuses[statusIndex];
     }
-    document.getElementById('progress-bar').style.width = progress + '%';
-  }, 150);
+  }, 300);
 }
+
+
 
 // ============================================
 // NEW 3D LOADING EFFECT - PARTICLES + WAVES
@@ -787,10 +922,28 @@ function navigate(direction) {
 
   updatePosition();
   updateMinimap(currentX, currentY);
+  setTimeout(updateVisibleSection, 50);
   if (currentX === -1 && currentY === 1) initSnakeGame();
   if (currentX === -2 && currentY === 1) initTicTacToe();
   if (currentX === -3 && currentY === 1) initMemoryGame();
 }
+
+document.querySelectorAll('.nav-arrow, .minimap-cell').forEach(btn => {
+  btn.addEventListener('click', () => {
+    setTimeout(updateVisibleSection, 100);
+  });
+});
+
+// Detect if home is initial view
+window.addEventListener('DOMContentLoaded', () => {
+  // Start animations only if on home
+  if (currentX === 0 && currentY === 0) {
+    startHomeAnimations();
+    isHomeVisible = true;
+  }
+});
+
+
 
 navArrows.forEach(arrow => {
   arrow.addEventListener('click', () => navigate(arrow.getAttribute('data-direction')));
@@ -860,6 +1013,36 @@ document.addEventListener('touchend', (e) => {
   const diffX = touchStartX - touchEndX;
   const diffY = touchStartY - touchEndY;
   
+  // SNAKE GAME: Direct control without navigate()
+  if (snakeGameRunning && currentGameType === 'snake') {
+    if (Math.abs(diffX) > Math.abs(diffY)) {
+      // Horizontal swipe
+      if (diffX > 50 && currentSnakeDX === 0) {
+        // Swipe LEFT = move LEFT
+        currentSnakeDX = -1;
+        currentSnakeDY = 0;
+      } else if (diffX < -50 && currentSnakeDX === 0) {
+        // Swipe RIGHT = move RIGHT
+        currentSnakeDX = 1;
+        currentSnakeDY = 0;
+      }
+    } else {
+      // Vertical swipe
+      if (diffY > 50 && currentSnakeDY === 0) {
+        // Swipe UP = move UP
+        currentSnakeDX = 0;
+        currentSnakeDY = -1;
+      } else if (diffY < -50 && currentSnakeDY === 0) {
+        // Swipe DOWN = move DOWN
+        currentSnakeDX = 0;
+        currentSnakeDY = 1;
+      }
+    }
+    hideCursor();
+    return; // Don't continue to terminal navigation
+  }
+  
+  // TERMINAL NAVIGATION: Original logic
   if (Math.abs(diffX) > Math.abs(diffY)) {
     if (diffX > 50) navigate('right');
     else if (diffX < -50) navigate('left');
@@ -869,6 +1052,8 @@ document.addEventListener('touchend', (e) => {
   }
   hideCursor();
 });
+
+
 
 function showAbout() {
   document.getElementById('about-content').style.display = 'block';
@@ -980,12 +1165,17 @@ function startSnakeGame() {
   let food = {x: 15, y: 15};
   let score = 0;
   let gameLoop;
+  let isGameOver = false; // NEW: Track game over state explicitly
   
   currentSnakeDX = 0;
   currentSnakeDY = 0;
   
   function drawGame() {
-    if (!snakeGameRunning) return;
+    // CRITICAL: Stop if game is over
+    if (!snakeGameRunning || isGameOver) {
+      clearTimeout(gameLoop);
+      return;
+    }
     
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -993,10 +1183,11 @@ function startSnakeGame() {
     if (currentSnakeDX !== 0 || currentSnakeDY !== 0) {
       const head = {x: snake[0].x + currentSnakeDX, y: snake[0].y + currentSnakeDY};
       
+      // Check collision FIRST before updating
       if (head.x < 0 || head.x >= tileCount || head.y < 0 || head.y >= tileCount ||
           snake.some(s => s.x === head.x && s.y === head.y)) {
         gameOver();
-        return;
+        return; // CRITICAL: Stop execution immediately
       }
       
       snake.unshift(head);
@@ -1020,8 +1211,18 @@ function startSnakeGame() {
   }
   
   function gameOver() {
+    // CRITICAL: Set all stop flags IMMEDIATELY
+    isGameOver = true;
     snakeGameRunning = false;
     clearTimeout(gameLoop);
+    
+    // Clear any pending animations
+    if (gameLoop) {
+      clearTimeout(gameLoop);
+      gameLoop = null;
+    }
+    
+    // Draw game over screen
     ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#f00';
@@ -1036,8 +1237,12 @@ function startSnakeGame() {
   }
   
   function restartGame() {
+    // Clean up old game completely
     clearTimeout(gameLoop);
-    startSnakeGame(); // Start fresh game
+    isGameOver = false;
+    
+    // Start fresh
+    startSnakeGame();
   }
   
   const controls = (e) => {
@@ -1049,17 +1254,20 @@ function startSnakeGame() {
       gameKeyboardActive = false;
       snakeGameRunning = false;
       snakeInitialized = false;
+      isGameOver = false;
       document.removeEventListener('keydown', controls);
-      initSnakeGame(); // Go back to "Press ENTER" screen
+      initSnakeGame();
+      updateMobileGameButtons();
       e.preventDefault();
     }
     else if (e.key === 'r' || e.key === 'R') {
-      // R - Restart game
+      // R - Restart game (works anytime)
+      document.removeEventListener('keydown', controls);
       restartGame();
       e.preventDefault();
     }
-    else if (snakeGameRunning) {
-      // Game controls
+    else if (snakeGameRunning && !isGameOver) {
+      // Game controls - only when game is active
       if ((e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') && currentSnakeDY === 0) { 
         currentSnakeDX = 0; currentSnakeDY = -1; e.preventDefault(); 
       }
@@ -1079,6 +1287,7 @@ function startSnakeGame() {
   drawGame();
   updateMobileGameButtons();
 }
+
 
 
 
@@ -1269,71 +1478,79 @@ function startMemoryGame() {
   const content = document.getElementById('mem-content');
   
   const emojis = ['🎮', '🎯', '🎲', '🎪', '🎨', '🎭', '🎬', '🎸'];
-  const cards = [...emojis, ...emojis].sort(() => Math.random() - 0.5);
+  let cards = [...emojis, ...emojis].sort(() => Math.random() - 0.5);
   
   let flipped = [], matched = [], moves = 0, canClick = true, timeLeft = 30, timerInterval;
+
+  const isMobile = window.innerWidth <= 768;
   
   content.innerHTML = `
     <div><span class="prompt">root@ammz:~/games/memory$</span> python3 memory.py</div>
     <div style="margin: 0.5rem 0; font-size: 0.8rem;">
       Time: <span id="mem-timer" style="color: #0f0;">30s</span> | Moves: <span id="mem-moves">0</span> | Matched: <span id="mem-matched">0/8</span> | <span style="color: #0f08;">R=restart ESC=exit</span>
     </div>
-    <div style="display: flex; justify-content: center; margin: 1rem 0;">
-      <div id="mem-board" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; max-width: 300px; width: 100%;"></div>
+    <div style="display: flex; justify-content: center; margin: ${isMobile ? '0.5rem' : '1rem'} 0;">
+      <div id="mem-board" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: ${isMobile ? '0.3rem' : '0.4rem'}; max-width: ${isMobile ? '250px' : '300px'}; width: 100%;"></div>
     </div>
     <div style="margin-top: 0.5rem;"><span class="prompt">root@ammz:~/games/memory$</span> <span class="typing-cursor"></span></div>
   `;
   
   const boardEl = document.getElementById('mem-board');
-  cards.forEach((emoji) => {
-    const card = document.createElement('div');
-    card.dataset.emoji = emoji;
-    card.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 2rem; cursor: pointer; transition: all 0.3s;`;
-    card.textContent = '?';
-    
-    card.addEventListener('click', () => {
-      if (!canClick || flipped.includes(card) || matched.includes(card.dataset.emoji)) return;
+  
+  function createBoard() {
+    boardEl.innerHTML = '';
+    cards.forEach((emoji) => {
+      const card = document.createElement('div');
+      card.dataset.emoji = emoji;
+      card.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 2rem; cursor: pointer; transition: all 0.3s;`;
+      card.textContent = '?';
       
-      card.textContent = card.dataset.emoji;
-      card.style.background = 'rgba(0, 255, 0, 0.3)';
-      flipped.push(card);
-      
-      if (flipped.length === 2) {
-        canClick = false;
-        moves++;
-        document.getElementById('mem-moves').textContent = moves;
+      card.addEventListener('click', () => {
+        if (!canClick || flipped.includes(card) || matched.includes(card.dataset.emoji)) return;
         
-        const [card1, card2] = flipped;
+        card.textContent = card.dataset.emoji;
+        card.style.background = 'rgba(0, 255, 0, 0.3)';
+        flipped.push(card);
         
-        if (card1.dataset.emoji === card2.dataset.emoji) {
-          matched.push(card1.dataset.emoji);
-          document.getElementById('mem-matched').textContent = `${matched.length}/8`;
-          flipped = [];
-          canClick = true;
+        if (flipped.length === 2) {
+          canClick = false;
+          moves++;
+          document.getElementById('mem-moves').textContent = moves;
           
-          if (matched.length === 8) {
-            clearInterval(timerInterval);
-            memoryGameActive = false;
-            setTimeout(() => {
-              document.getElementById('mem-timer').parentElement.innerHTML = 
-                `<span style="color: #0f0;">🎉 Won in ${moves} moves with ${timeLeft}s left!</span> | <span style="color: #0f08;">ESC=exit</span>`;
-            }, 300);
-          }
-        } else {
-          setTimeout(() => {
-            card1.textContent = '?';
-            card2.textContent = '?';
-            card1.style.background = 'rgba(0, 255, 0, 0.1)';
-            card2.style.background = 'rgba(0, 255, 0, 0.1)';
+          const [card1, card2] = flipped;
+          
+          if (card1.dataset.emoji === card2.dataset.emoji) {
+            matched.push(card1.dataset.emoji);
+            document.getElementById('mem-matched').textContent = `${matched.length}/8`;
             flipped = [];
             canClick = true;
-          }, 800);
+            
+            if (matched.length === 8) {
+              clearInterval(timerInterval);
+              memoryGameActive = false;
+              setTimeout(() => {
+                document.getElementById('mem-timer').parentElement.innerHTML = 
+                  `<span style="color: #0f0;">🎉 Won in ${moves} moves with ${timeLeft}s left!</span> | <span style="color: #0f08;">R=restart ESC=exit</span>`;
+              }, 300);
+            }
+          } else {
+            setTimeout(() => {
+              card1.textContent = '?';
+              card2.textContent = '?';
+              card1.style.background = 'rgba(0, 255, 0, 0.1)';
+              card2.style.background = 'rgba(0, 255, 0, 0.1)';
+              flipped = [];
+              canClick = true;
+            }, 800);
+          }
         }
-      }
+      });
+      
+      boardEl.appendChild(card);
     });
-    
-    boardEl.appendChild(card);
-  });
+  }
+  
+  createBoard();
   
   timerInterval = setInterval(() => {
     timeLeft--;
@@ -1348,109 +1565,110 @@ function startMemoryGame() {
       canClick = false;
       memoryGameActive = false;
       document.getElementById('mem-timer').parentElement.innerHTML = 
-        `<span style="color: #f00;">⏰ Time's Up!</span> | <span style="color: #0f08;">R=retry ESC=exit</span>`;
+        `<span style="color: #f00;">⏰ Time's Up!</span> | <span style="color: #0f08;">R=restart ESC=exit</span>`;
     }
   }, 1000);
   
-  // SIMPLE RESTART FUNCTION
-// In startMemoryGame() - replace the restart function with:
-function restart() {
-  // Clear the current timer
-  clearInterval(timerInterval);
-  
-  // RESTART the game - don't exit, just reset
-  gameActive = true;
-  currentGameType = 'memory';
-  gameKeyboardActive = true;
-  memoryGameActive = true;
-  
-  // Reset game variables
-  flipped = [];
-  matched = [];
-  moves = 0;
-  canClick = true;
-  timeLeft = 30;
-  
-  // Update UI
-  document.getElementById('mem-moves').textContent = '0';
-  document.getElementById('mem-matched').textContent = '0/8';
-  document.getElementById('mem-timer').textContent = '30s';
-  document.getElementById('mem-timer').style.color = '#0f0';
-  
-  // Clear the board and recreate cards
-  boardEl.innerHTML = '';
-  cards.sort(() => Math.random() - 0.5);
-  
-  cards.forEach((emoji) => {
-    const card = document.createElement('div');
-    card.dataset.emoji = emoji;
-    card.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 2rem; cursor: pointer; transition: all 0.3s;`;
-    card.textContent = '?';
+  function restart() {
+    // Clear the current timer
+    clearInterval(timerInterval);
     
-    card.addEventListener('click', () => {
-      if (!canClick || flipped.includes(card) || matched.includes(card.dataset.emoji)) return;
+    // Reset game variables
+    flipped = [];
+    matched = [];
+    moves = 0;
+    canClick = true;
+    timeLeft = 30;
+    memoryGameActive = true;
+    
+    // Reshuffle cards
+    cards = [...emojis, ...emojis].sort(() => Math.random() - 0.5);
+
+      const isMobile = window.innerWidth <= 768;
+
+    
+  content.innerHTML = `
+    <div><span class="prompt">root@ammz:~/games/memory$</span> python3 memory.py</div>
+    <div style="margin: 0.5rem 0; font-size: 0.8rem;">
+      Time: <span id="mem-timer" style="color: #0f0;">30s</span> | Moves: <span id="mem-moves">0</span> | Matched: <span id="mem-matched">0/8</span> | <span style="color: #0f08;">R=restart ESC=exit</span>
+    </div>
+    <div style="display: flex; justify-content: center; margin: ${isMobile ? '0.5rem' : '1rem'} 0;">
+      <div id="mem-board" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: ${isMobile ? '0.3rem' : '0.4rem'}; max-width: ${isMobile ? '250px' : '300px'}; width: 100%;"></div>
+    </div>
+    <div style="margin-top: 0.5rem;"><span class="prompt">root@ammz:~/games/memory$</span> <span class="typing-cursor"></span></div>
+  `;
+    
+    // Recreate the board with new reference
+    const newBoardEl = document.getElementById('mem-board');
+    cards.forEach((emoji) => {
+      const card = document.createElement('div');
+      card.dataset.emoji = emoji;
+    card.style.cssText = `aspect-ratio: 1; background: rgba(0, 255, 0, 0.1); border: 2px solid #0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: ${isMobile ? '1.5rem' : '2rem'}; cursor: pointer; transition: all 0.3s;`;
+    card.textContent = '?';
       
-      card.textContent = card.dataset.emoji;
-      card.style.background = 'rgba(0, 255, 0, 0.3)';
-      flipped.push(card);
-      
-      if (flipped.length === 2) {
-        canClick = false;
-        moves++;
-        document.getElementById('mem-moves').textContent = moves;
+      card.addEventListener('click', () => {
+        if (!canClick || flipped.includes(card) || matched.includes(card.dataset.emoji)) return;
         
-        const [card1, card2] = flipped;
+        card.textContent = card.dataset.emoji;
+        card.style.background = 'rgba(0, 255, 0, 0.3)';
+        flipped.push(card);
         
-        if (card1.dataset.emoji === card2.dataset.emoji) {
-          matched.push(card1.dataset.emoji);
-          document.getElementById('mem-matched').textContent = `${matched.length}/8`;
-          flipped = [];
-          canClick = true;
+        if (flipped.length === 2) {
+          canClick = false;
+          moves++;
+          document.getElementById('mem-moves').textContent = moves;
           
-          if (matched.length === 8) {
-            clearInterval(timerInterval);
-            memoryGameActive = false;
-            setTimeout(() => {
-              document.getElementById('mem-timer').parentElement.innerHTML = 
-                `<span style="color: #0f0;">🎉 Won in ${moves} moves with ${timeLeft}s left!</span> | <span style="color: #0f08;">ESC=exit</span>`;
-            }, 300);
-          }
-        } else {
-          setTimeout(() => {
-            card1.textContent = '?';
-            card2.textContent = '?';
-            card1.style.background = 'rgba(0, 255, 0, 0.1)';
-            card2.style.background = 'rgba(0, 255, 0, 0.1)';
+          const [card1, card2] = flipped;
+          
+          if (card1.dataset.emoji === card2.dataset.emoji) {
+            matched.push(card1.dataset.emoji);
+            document.getElementById('mem-matched').textContent = `${matched.length}/8`;
             flipped = [];
             canClick = true;
-          }, 800);
+            
+            if (matched.length === 8) {
+              clearInterval(timerInterval);
+              memoryGameActive = false;
+              setTimeout(() => {
+                document.getElementById('mem-timer').parentElement.innerHTML = 
+                  `<span style="color: #0f0;">🎉 Won in ${moves} moves with ${timeLeft}s left!</span> | <span style="color: #0f08;">R=restart ESC=exit</span>`;
+              }, 300);
+            }
+          } else {
+            setTimeout(() => {
+              card1.textContent = '?';
+              card2.textContent = '?';
+              card1.style.background = 'rgba(0, 255, 0, 0.1)';
+              card2.style.background = 'rgba(0, 255, 0, 0.1)';
+              flipped = [];
+              canClick = true;
+            }, 800);
+          }
         }
-      }
+      });
+      
+      newBoardEl.appendChild(card);
     });
     
-    boardEl.appendChild(card);
-  });
+    // Start new timer
+    timerInterval = setInterval(() => {
+      timeLeft--;
+      const timerEl = document.getElementById('mem-timer');
+      timerEl.textContent = timeLeft + 's';
+      
+      if (timeLeft <= 10) timerEl.style.color = '#ff0';
+      if (timeLeft <= 5) timerEl.style.color = '#f00';
+      
+      if (timeLeft <= 0) {
+        clearInterval(timerInterval);
+        canClick = false;
+        memoryGameActive = false;
+        document.getElementById('mem-timer').parentElement.innerHTML = 
+          `<span style="color: #f00;">⏰ Time's Up!</span> | <span style="color: #0f08;">R=restart ESC=exit</span>`;
+      }
+    }, 1000);
+  }
   
-  // Start new timer
-  timerInterval = setInterval(() => {
-    timeLeft--;
-    const timerEl = document.getElementById('mem-timer');
-    timerEl.textContent = timeLeft + 's';
-    
-    if (timeLeft <= 10) timerEl.style.color = '#ff0';
-    if (timeLeft <= 5) timerEl.style.color = '#f00';
-    
-    if (timeLeft <= 0) {
-      clearInterval(timerInterval);
-      canClick = false;
-      memoryGameActive = false;
-      document.getElementById('mem-timer').parentElement.innerHTML = 
-        `<span style="color: #f00;">⏰ Time's Up!</span> | <span style="color: #0f08;">R=retry ESC=exit</span>`;
-    }
-  }, 1000);
-}
-  
-  // SIMPLE CONTROLS - just use the existing global keyboard handler
   const controls = (e) => {
     if (e.key === 'Escape') {
       clearInterval(timerInterval);
@@ -1461,6 +1679,7 @@ function restart() {
       memInitialized = false;
       document.removeEventListener('keydown', controls);
       initMemoryGame();
+      updateMobileGameButtons();
       e.preventDefault();
     }
     if (e.key === 'r' || e.key === 'R') { 
@@ -1472,6 +1691,7 @@ function restart() {
   document.addEventListener('keydown', controls);
   updateMobileGameButtons();
 }
+
 
 // Home button click handler
 document.querySelector('.nav-arrow.home-btn').addEventListener('click', () => {
@@ -1819,3 +2039,55 @@ document.addEventListener('touchend', (e) => {
 
 
 setupMobileGameButtons();
+
+// ADD THESE NEW FUNCTIONS:
+function updateVisibleSection() {
+  const container = document.getElementById('sections-container');
+  if (!container) return;
+  const isOnHome = currentX === 0 && currentY === 0;
+  
+  if (isOnHome && !isHomeVisible) {
+    startHomeAnimations();
+    isHomeVisible = true;
+  } else if (!isOnHome && isHomeVisible) {
+    stopHomeAnimations();
+    isHomeVisible = false;
+  }
+}
+
+function stopHomeAnimations() {
+  if (mainAnimationId) {
+    cancelAnimationFrame(mainAnimationId);
+    mainAnimationId = null;
+  }
+  if (matrixAnimationId) {
+    cancelAnimationFrame(matrixAnimationId);
+    matrixAnimationId = null;
+  }
+  const canvas3D = document.getElementById('canvas-3d');
+  const matrixCanvas = document.getElementById('matrix-canvas');
+  if (canvas3D && canvas3D.style.display !== 'none') {
+    canvas3D.style.display = 'none';
+  }
+  if (matrixCanvas && matrixCanvas.style.display !== 'none') {
+    matrixCanvas.style.display = 'none';
+  }
+}
+
+function startHomeAnimations() {
+  const canvas3D = document.getElementById('canvas-3d');
+  const matrixCanvas = document.getElementById('matrix-canvas');
+  if (canvas3D) canvas3D.style.display = 'block';
+  if (matrixCanvas) matrixCanvas.style.display = 'block';
+  if (!mainAnimationId) animateMain();
+  if (!matrixAnimationId) drawMatrix();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    initCreatorBadge();
+    initSocialLinks();
+});
+
+
+initCreatorBadge();
+initSocialLinks();

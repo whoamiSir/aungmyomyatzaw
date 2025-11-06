@@ -809,7 +809,11 @@ def after_request(response):
 @app.route('/')
 def portfolio_home():
     """Portfolio as main landing page"""
-    host = request.headers.get('Host', '')
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve portfolio directly
+    if 'localhost' in host:
+        return send_from_directory('static/portfolio', 'index.html')
     
     if 'tempmail.' in host:
         return send_from_directory('static/projects/tempmail', 'index.html')
@@ -819,7 +823,11 @@ def portfolio_home():
 @app.route('/admin')
 def admin_panel():
     """Admin panel - works for both domains"""
-    host = request.headers.get('Host', '')
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve admin directly
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'admin.html')
     
     if 'tempmail.' in host:
         return send_from_directory('static/projects/tempmail', 'admin.html')
@@ -830,29 +838,71 @@ def admin_panel():
 @app.route('/downloader')
 def downloader_home():
     """Downloader frontend - only on main domain"""
-    return send_from_directory('static/projects/downloader', 'index.html')
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: Allow downloader on localhost too
+    if 'localhost' in host or 'tempmail.' not in host:
+        return send_from_directory('static/projects/downloader', 'index.html')
+    
+    # For tempmail subdomain, redirect to main domain downloader
+    return redirect('https://aungmyomyatzaw.online/downloader')
 
 @app.route('/projects/tempmail')
 def tempmail_redirect():
     """Redirect main domain tempmail access to subdomain"""
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve tempmail directly
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'index.html')
+    
     return redirect('https://tempmail.aungmyomyatzaw.online')
 
 @app.route('/projects/tempmail/admin')
 def tempmail_admin_redirect():
     """Redirect main domain tempmail admin to subdomain"""
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve admin directly
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'admin.html')
+    
     return redirect('https://tempmail.aungmyomyatzaw.online/admin')
 
 # Update your static file serving for tempmail
 @app.route('/projects/tempmail/<path:filename>')
 def tempmail_static(filename):
     """Serve tempmail static files"""
-    host = request.headers.get('Host', '')
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve static files directly
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', filename)
     
     if 'tempmail.' in host:
         return send_from_directory('static/projects/tempmail', filename)
     else:
         # If accessed from main domain, redirect to subdomain
-        return redirect(f'https://tempmail.aungmyomyatzaw.online/{filename}')
+        return redirect(f'https://tempmail.aungmyomyatzaw.online/projects/tempmail/{filename}')
+
+# ✅ ADD THIS NEW ROUTE for local tempmail access
+@app.route('/tempmail')
+def local_tempmail():
+    """Local-only route for tempmail home"""
+    host = request.headers.get('Host', '').lower()
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'index.html')
+    return redirect('https://tempmail.aungmyomyatzaw.online')
+
+# ✅ ADD THIS NEW ROUTE for local admin access
+@app.route('/tempmail/admin')
+def local_admin():
+    """Local-only route for admin panel"""
+    host = request.headers.get('Host', '').lower()
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'admin.html')
+    return redirect('https://tempmail.aungmyomyatzaw.online/admin')
+
 
 
 @app.route('/api/download', methods=['POST'])
@@ -1939,7 +1989,7 @@ def generate_access_code():
         email_address = f"{username}@{domain}"
         
         conn = get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=RealDictCursor) 
         
         # Check for ACTIVE sessions only
         c.execute('''
@@ -2039,7 +2089,7 @@ def generate_access_code():
             if 'access_codes_code_key' in str(e):
             # Check if the existing code is expired/revoked and can be deleted
                 c.execute('''
-                    SELECT code, expires_at, is_revoked 
+                    SELECT code, expires_at, is_active 
                     FROM access_codes 
                     WHERE code = %s
                 ''', (code,))
@@ -2049,9 +2099,9 @@ def generate_access_code():
                 if existing:
                     # Check if it's expired or revoked
                     is_expired = existing['expires_at'] < datetime.now()
-                    is_revoked = existing.get('is_revoked', False)
+                    is_active_code = existing.get('is_active', True)
                     
-                    if is_expired or is_revoked:
+                    if is_expired or not is_active_code:
                         # Delete the old code and create new one
                         logger.info(f"♻️ Reusing expired/revoked code: {code}")
                         c.execute('DELETE FROM access_codes WHERE code = %s', (code,))

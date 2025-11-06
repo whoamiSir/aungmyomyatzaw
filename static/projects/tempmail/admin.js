@@ -515,52 +515,123 @@ function loadBannedDevices() {
 }
 
 function loadDeviceSessions() {
-    fetch(`${API_URL}/api/admin/device-sessions`, {
-        credentials: 'include'
-    })
+    fetch(`${API_URL}/api/admin/device-sessions`, { credentials: 'include' })
     .then(res => res.json())
     .then(data => {
         const list = document.getElementById('device-sessions-list');
         
         if (!data || data.error || !data.device_sessions || data.device_sessions.length === 0) {
-            list.innerHTML = '<p class="text-gray-400 text-center py-4">No device sessions found</p>';
+            list.innerHTML = '<div class="text-center py-8 text-gray-400"><i class="fas fa-mobile-alt text-3xl mb-2"></i><div>No device sessions found</div></div>';
             return;
         }
         
+        // Group sessions by device_id
+        const deviceGroups = {};
+        data.device_sessions.forEach(session => {
+            const deviceId = session.device_id;
+            if (!deviceGroups[deviceId]) {
+                deviceGroups[deviceId] = [];
+            }
+            deviceGroups[deviceId].push(session);
+        });
+        
         list.innerHTML = '';
         
-        data.device_sessions.forEach(session => {
-            const item = document.createElement('div');
-            item.className = 'bg-gray-800 border border-gray-700 rounded-lg p-3';
-            item.innerHTML = `
-                <div class="flex justify-between items-start mb-2">
-                    <div class="flex-1">
-                        <div class="flex items-center gap-2 mb-1">
-                            <i class="fas fa-laptop text-blue-400"></i>
-                            <code class="text-white font-mono text-sm break-all">${session.device_id}</code>
-                        </div>
-                        <div class="text-xs text-gray-400">
-                            <div>Email: ${escapeHtml(session.email_address)}</div>
-                            <div>Time: ${formatTime(session.created_at)}</div>
-                            ${session.ip_address ? `<div>IP: ${session.ip_address}</div>` : ''}
-                        </div>
+        // Render each device group
+        Object.keys(deviceGroups).forEach(deviceId => {
+            const sessions = deviceGroups[deviceId];
+            const totalEmails = sessions.length;
+            const showLimit = 3;
+            const hasMore = totalEmails > showLimit;
+            
+            const deviceDiv = document.createElement('div');
+            deviceDiv.className = 'bg-gray-800 border border-gray-700 rounded-lg p-4 space-y-3';
+            
+            // Device header
+            const headerHtml = `
+                <div class="flex justify-between items-center pb-3 border-b border-gray-700">
+                    <div class="flex items-center gap-2">
+                        <i class="fas fa-mobile-alt text-blue-400"></i>
+                        <span class="font-mono text-sm text-gray-300">\`${deviceId}\`</span>
                     </div>
-                    <button onclick="banDeviceById('${session.device_id}')" 
-                            class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm transition-colors ml-3 flex items-center"
-                            title="Ban This Device">
-                        <i class="fas fa-ban mr-1"></i> Ban
-                    </button>
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs text-gray-400">${totalEmails} email${totalEmails > 1 ? 's' : ''}</span>
+                        <button onclick="banDeviceById('${deviceId}')" class="text-xs bg-red-600 hover:bg-red-700 px-3 py-1 rounded transition-colors">
+                            <i class="fas fa-ban mr-1"></i>Ban
+                        </button>
+                    </div>
                 </div>
             `;
-            list.appendChild(item);
+            
+            // Email list (show first 3)
+            let emailListHtml = '<div class="space-y-2 email-list">';
+            sessions.slice(0, showLimit).forEach(session => {
+                emailListHtml += `
+                    <div class="bg-gray-900 p-2 rounded text-xs flex justify-between items-center">
+                        <div class="flex-1 truncate">
+                            <i class="fas fa-envelope text-green-400 mr-2"></i>
+                            <span class="text-gray-300">${escapeHtml(session.email_address)}</span>
+                        </div>
+                        <span class="text-gray-500 text-xs ml-2">${formatTime(session.last_activity)}</span>
+                    </div>
+                `;
+            });
+            emailListHtml += '</div>';
+            
+            // "Show more" button if needed
+            let showMoreHtml = '';
+            if (hasMore) {
+                const remainingCount = totalEmails - showLimit;
+                showMoreHtml = `
+                    <button onclick="toggleDeviceEmails(this, '${deviceId}')" 
+                            class="w-full text-xs text-blue-400 hover:text-blue-300 py-2 transition-colors"
+                            data-expanded="false">
+                        <i class="fas fa-chevron-down mr-1"></i>
+                        Show ${remainingCount} more email${remainingCount > 1 ? 's' : ''}
+                    </button>
+                    <div class="hidden-emails hidden space-y-2">
+                        ${sessions.slice(showLimit).map(session => `
+                            <div class="bg-gray-900 p-2 rounded text-xs flex justify-between items-center">
+                                <div class="flex-1 truncate">
+                                    <i class="fas fa-envelope text-green-400 mr-2"></i>
+                                    <span class="text-gray-300">${escapeHtml(session.email_address)}</span>
+                                </div>
+                                <span class="text-gray-500 text-xs ml-2">${formatTime(session.last_activity)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+            
+            deviceDiv.innerHTML = headerHtml + emailListHtml + showMoreHtml;
+            list.appendChild(deviceDiv);
         });
     })
     .catch(err => {
         console.error('Error loading device sessions:', err);
         document.getElementById('device-sessions-list').innerHTML = 
-            '<p class="text-red-400 text-center py-4">Failed to load device sessions</p>';
+            '<div class="text-center py-4 text-red-400"><i class="fas fa-exclamation-circle mr-2"></i>Failed to load device sessions</div>';
     });
 }
+
+// Add toggle function for "Show more" button
+function toggleDeviceEmails(button, deviceId) {
+    const isExpanded = button.getAttribute('data-expanded') === 'true';
+    const hiddenEmails = button.nextElementSibling;
+    
+    if (isExpanded) {
+        // Collapse
+        hiddenEmails.classList.add('hidden');
+        button.innerHTML = '<i class="fas fa-chevron-down mr-1"></i>Show more emails';
+        button.setAttribute('data-expanded', 'false');
+    } else {
+        // Expand
+        hiddenEmails.classList.remove('hidden');
+        button.innerHTML = '<i class="fas fa-chevron-up mr-1"></i>Show less';
+        button.setAttribute('data-expanded', 'true');
+    }
+}
+
 
 function banDevice() {
     const deviceId = document.getElementById('ban-device-input').value.trim();
@@ -749,6 +820,28 @@ function generateAccessCode() {
         }
     });
 }
+
+function checkUsernameAvailability() {
+  const username = document.getElementById('generate-code-username').value.trim().toLowerCase();
+  const availabilityDiv = document.getElementById('username-availability');
+  
+  if (!username) {
+    if (availabilityDiv) availabilityDiv.innerHTML = '';
+    return;
+  }
+  
+  const isBlacklisted = blacklistedUsernames.includes(username);
+  const message = isBlacklisted 
+    ? `❌ "@${username}" is blacklisted` 
+    : `✅ "@${username}" is available`;
+  
+  if (availabilityDiv) {
+    availabilityDiv.innerHTML = message;
+    availabilityDiv.style.color = isBlacklisted ? '#ef4444' : '#10b981';
+  }
+}
+
+
 function revokeAccessCode(code) {
     if (!code) {
         showNotification('❌ No access code provided', 'error');
