@@ -44,29 +44,308 @@ function checkDeviceBan() {
     return deviceId;
 }
 
-// Add ban detection and UI
-function showBannedScreen() {
-    document.body.innerHTML = `
-        <div class="min-h-screen bg-gradient-to-br from-red-600 to-red-800 flex items-center justify-center p-4">
-            <div class="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-2xl">
-                <div class="text-red-500 text-6xl mb-4">
-                    <i class="fas fa-ban"></i>
+function showBannedScreen(reason = 'Multiple policy violations detected') {
+    // Stop all intervals
+    if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+    if (timeUpdateInterval) clearInterval(timeUpdateInterval);
+    
+    // Create overlay that covers everything
+    const overlay = document.createElement('div');
+    overlay.id = 'ban-overlay';
+    overlay.innerHTML = `
+        <style>
+            #ban-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.85);
+                backdrop-filter: blur(10px);
+                z-index: 999999;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 1rem;
+                animation: fadeIn 0.3s ease;
+            }
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+            .ban-modal {
+                max-width: 480px;
+                width: 100%;
+                background: white;
+                border-radius: 20px;
+                padding: 2rem;
+                box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+                animation: slideUp 0.4s ease;
+                max-height: 90vh;
+                overflow-y: auto;
+            }
+            @keyframes slideUp {
+                from { transform: translateY(30px); opacity: 0; }
+                to { transform: translateY(0); opacity: 1; }
+            }
+            .ban-icon {
+                width: 80px;
+                height: 80px;
+                background: linear-gradient(135deg, #ff6b6b 0%, #c92a2a 100%);
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0 auto 1.5rem;
+                animation: shake 0.5s ease;
+            }
+            @keyframes shake {
+                0%, 100% { transform: rotate(0deg); }
+                25% { transform: rotate(-10deg); }
+                75% { transform: rotate(10deg); }
+            }
+            .ban-icon svg {
+                width: 44px;
+                height: 44px;
+                color: white;
+            }
+            .ban-badge {
+                display: inline-block;
+                background: linear-gradient(135deg, #ff6b6b, #c92a2a);
+                color: white;
+                padding: 0.5rem 1rem;
+                border-radius: 20px;
+                font-size: 0.75rem;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                margin-bottom: 1rem;
+            }
+            .ban-title {
+                font-size: 1.75rem;
+                font-weight: 800;
+                color: #1a1a1a;
+                margin-bottom: 0.75rem;
+                text-align: center;
+            }
+            .ban-message {
+                color: #666;
+                line-height: 1.6;
+                margin-bottom: 1.5rem;
+                text-align: center;
+                font-size: 0.95rem;
+            }
+            .reason-box {
+                background: linear-gradient(135deg, #fff5f5, #fee2e2);
+                border: 2px solid #fca5a5;
+                border-radius: 12px;
+                padding: 1rem;
+                margin-bottom: 1.5rem;
+            }
+            .reason-label {
+                color: #991b1b;
+                font-weight: 700;
+                margin-bottom: 0.5rem;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                font-size: 0.85rem;
+            }
+            .reason-text {
+                color: #7f1d1d;
+                font-size: 0.9rem;
+                font-weight: 500;
+                line-height: 1.5;
+            }
+            .device-box {
+                background: #f8f9fa;
+                border-radius: 10px;
+                padding: 1rem;
+                margin-bottom: 1.5rem;
+                border: 2px dashed #dee2e6;
+            }
+            .device-label {
+                font-size: 0.75rem;
+                color: #888;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 0.5rem;
+            }
+            .device-code {
+                font-family: 'Courier New', monospace;
+                font-size: 0.85rem;
+                color: #1a1a1a;
+                font-weight: 700;
+                word-break: break-all;
+                background: white;
+                padding: 0.5rem;
+                border-radius: 6px;
+                border: 1px solid #e5e5e5;
+            }
+            .contact-section {
+                border-top: 2px solid #f0f0f0;
+                padding-top: 1.5rem;
+                margin-top: 1.5rem;
+            }
+            .contact-title {
+                font-size: 0.9rem;
+                font-weight: 700;
+                color: #1a1a1a;
+                margin-bottom: 1rem;
+                text-align: center;
+            }
+            .contact-buttons {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 0.75rem;
+            }
+            .contact-btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 0.5rem;
+                padding: 0.875rem;
+                border-radius: 10px;
+                font-weight: 600;
+                font-size: 0.85rem;
+                text-decoration: none;
+                transition: all 0.3s ease;
+                border: none;
+                cursor: pointer;
+            }
+            .contact-btn:active {
+                transform: scale(0.95);
+            }
+            .contact-btn-telegram {
+                background: linear-gradient(135deg, #0088cc, #00aaff);
+                color: white;
+                box-shadow: 0 4px 12px rgba(0, 136, 204, 0.3);
+            }
+            .contact-btn-telegram:hover {
+                background: linear-gradient(135deg, #006fa3, #0088cc);
+                box-shadow: 0 6px 16px rgba(0, 136, 204, 0.4);
+            }
+            .contact-btn-facebook {
+                background: linear-gradient(135deg, #1877f2, #0866ff);
+                color: white;
+                box-shadow: 0 4px 12px rgba(24, 119, 242, 0.3);
+            }
+            .contact-btn-facebook:hover {
+                background: linear-gradient(135deg, #145dbf, #1877f2);
+                box-shadow: 0 6px 16px rgba(24, 119, 242, 0.4);
+            }
+            .contact-btn svg {
+                width: 20px;
+                height: 20px;
+            }
+            .footer-note {
+                text-align: center;
+                color: #999;
+                font-size: 0.75rem;
+                margin-top: 1rem;
+                line-height: 1.5;
+            }
+            
+            /* Mobile responsive */
+            @media (max-width: 640px) {
+                .ban-modal {
+                    padding: 1.5rem;
+                    border-radius: 16px;
+                }
+                .ban-title {
+                    font-size: 1.5rem;
+                }
+                .ban-icon {
+                    width: 70px;
+                    height: 70px;
+                }
+                .ban-icon svg {
+                    width: 38px;
+                    height: 38px;
+                }
+                .contact-buttons {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+        
+        <div class="ban-modal">
+            <div class="ban-icon">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path>
+                </svg>
+            </div>
+            
+            <div style="text-align: center;">
+                <span class="ban-badge">🚫 Permanent Ban</span>
+            </div>
+            
+            <h1 class="ban-title">Access Denied</h1>
+            
+            <p class="ban-message">
+                Your device has been permanently banned from accessing this service.
+            </p>
+            
+            <div class="reason-box">
+                <div class="reason-label">
+                    <svg style="width: 18px; height: 18px;" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                    </svg>
+                    Ban Reason
                 </div>
-                <h1 class="text-2xl font-bold text-gray-900 mb-4">Device Banned</h1>
-                <p class="text-gray-600 mb-6">
-                    Your device has been permanently banned from using this service due to violation of our terms of service.
-                </p>
-                <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-                    <p class="text-sm text-red-700">
-                        <strong>Reason:</strong> Multiple policy violations detected
-                    </p>
+                <div class="reason-text">${reason}</div>
+            </div>
+            
+            <div class="device-box">
+                <div class="device-label">Your Device ID</div>
+                <div class="device-code">${getOrCreateDeviceId()}</div>
+            </div>
+            
+            <div class="contact-section">
+                <div class="contact-title">📞 Contact Administrator</div>
+                <div class="contact-buttons">
+                    <a href="https://t.me/whoamiSir" target="_blank" rel="noopener" class="contact-btn contact-btn-telegram">
+                        <svg fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.446 1.394c-.14.18-.357.295-.6.295-.002 0-.003 0-.005 0l.213-3.054 5.56-5.022c.24-.213-.054-.334-.373-.121l-6.869 4.326-2.96-.924c-.64-.203-.658-.64.135-.954l11.566-4.458c.538-.196 1.006.128.832.941z"/>
+                        </svg>
+                        Telegram
+                    </a>
+                    <a href="https://facebook.com/aungmyomyatzaw.u" target="_blank" rel="noopener" class="contact-btn contact-btn-facebook">
+                        <svg fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+                        </svg>
+                        Facebook
+                    </a>
                 </div>
-                <p class="text-sm text-gray-500">
-                    If you believe this is a mistake, please contact the administrator.
-                </p>
+                <div class="footer-note">
+                    Include your Device ID when contacting us for review.
+                </div>
             </div>
         </div>
     `;
+    
+    // Append to body
+    document.body.appendChild(overlay);
+    
+    // Prevent all interactions with background
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+            e.stopPropagation();
+            e.preventDefault();
+        }
+    });
+    
+    // Disable all form inputs and buttons on the page
+    document.querySelectorAll('input, button, textarea, select, a').forEach(el => {
+        if (!overlay.contains(el)) {
+            el.style.pointerEvents = 'none';
+            el.disabled = true;
+        }
+    });
+    
+    // Prevent scrolling of background
+    document.body.style.overflow = 'hidden';
 }
 
 // Check for ban on page load
