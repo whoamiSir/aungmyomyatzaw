@@ -1554,10 +1554,16 @@ function continueEmailCreation(customName, btn ,deviceId) {
     .catch(err => {
         console.error('Error creating email:', err);
         
-        // ✅ CHECK FOR DEVICE BAN ERROR
-        if (err.message && err.message.includes('device has been banned')) {
-            showBannedScreen();
-            return;
+        // ✅ CHECK FOR DEVICE BAN ERROR - Multiple conditions
+        if (err.message && (
+            err.message.includes('device has been banned') ||
+            err.message.includes('ACCESS_DENIED_DEVICE_BANNED') ||
+            err.code === 'ACCESS_DENIED_DEVICE_BANNED' ||
+            err.error?.includes('device has been banned')
+        )) {
+            console.log('🚫 Device ban detected, showing ban screen');
+            showBannedScreen(err.message || 'Your device has been permanently banned due to policy violations.');
+            return;  // Stop execution
         }
         
         handleCreateError(err);
@@ -1582,6 +1588,12 @@ function resetButtonState() {
 
 // Enhanced error handling for email creation
 function handleCreateError(err) {
+        if (err.code === 'ACCESS_DENIED_DEVICE_BANNED' || 
+        err.message?.includes('device has been banned')) {
+        showBannedScreen();
+        return;
+    }
+
     if (err.httpStatus === 409 || err.code === 'EMAIL_IN_USE_ACTIVE') {
         resetUIAfterConflict();
         
