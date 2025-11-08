@@ -977,9 +977,11 @@ def create_email():
         if device_id and is_device_banned(device_id):
             logger.warning(f"🚫 Banned device attempted access: {device_id}")
             return jsonify({
-                'error': 'ACCESS_DENIED_DEVICE_BANNED',
-                'message': 'Your device has been banned from using this service.'
+                'error': 'Your device has been banned from using this service',  # ✅ THIS TEXT triggers showBannedScreen()
+                'code': 'ACCESS_DENIED_DEVICE_BANNED',
+                'message': 'Your device has been permanently banned due to policy violations.'
             }), 403
+
         
         # Validate security headers
         session_id = request.headers.get('X-Session-ID')
