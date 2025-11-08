@@ -15,6 +15,7 @@ let domainsLoaded = false;
 let isAdminMode = false;
 let isAccessMode = false;
 let accessStartTime = null;
+let banCheckInterval = null;
 
 // Initialize functions when DOM is loaded
 document.addEventListener('DOMContentLoaded', function() {
@@ -48,6 +49,11 @@ function showBannedScreen(reason = 'Multiple policy violations detected') {
     // Stop all intervals
     if (autoRefreshInterval) clearInterval(autoRefreshInterval);
     if (timeUpdateInterval) clearInterval(timeUpdateInterval);
+
+    currentEmail = '';
+    sessionToken = '';
+    localStorage.removeItem('tempmail_session');
+    sessionStorage.clear();
     
     // Create overlay that covers everything
     const overlay = document.createElement('div');
@@ -2733,38 +2739,65 @@ function validateCurrentSession() {
     return true;
 }
 
-
-function initApp() {
-    function displayDeviceIdForDebug() {
-    const deviceId = getOrCreateDeviceId();
-    console.log('🔍 Current Device ID:', deviceId);
+// ✅ START PERIODIC BAN CHECKING
+function startBanMonitoring() {
+    // Check immediately
+    checkDeviceBanStatus();
+    
+    // Then check every 30 seconds
+    banCheckInterval = setInterval(() => {
+        checkDeviceBanStatus();
+    }, 30000);
 }
+
+async function checkDeviceBanStatus() {
+    const deviceId = getOrCreateDeviceId();
+    
+    try {
+        const response = await fetch(`${API_URL}/api/check-device-ban/${deviceId}`, {
+            method: 'GET',
+            credentials: 'include'
+        });
+        
+        const data = await response.json();
+        
+        if (data.is_banned) {
+            console.log('🚫 Device ban detected during session');
+            if (banCheckInterval) clearInterval(banCheckInterval);
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            if (timeUpdateInterval) clearInterval(timeUpdateInterval);
+            showBannedScreen(data.reason);
+        }
+    } catch (err) {
+        console.error('Error checking ban status:', err);
+    }
+}
+
+
+async function initApp() {
     
     console.log('🚀 Initializing app...');
+
+    const deviceId = getOrCreateDeviceId();
+    try {
+        const banCheckResponse = await fetch(`${API_URL}/api/check-device-ban/${deviceId}`, {
+            method: 'GET',
+            credentials: 'include'
+        });
+        
+        const banData = await banCheckResponse.json();
+        
+        if (banData.is_banned) {
+            console.log('🚫 Device is banned on page load');
+            showBannedScreen(banData.reason || 'Your device has been permanently banned due to policy violations.');
+            return; // Stop initialization
+        }
+    } catch (err) {
+        console.error('Error checking ban status:', err);
+    }
     
     setupAccessDoor();
 
-    function displayDeviceIdForDebug() {
-    const deviceId = getOrCreateDeviceId();
-    console.log('🔍 Current Device ID:', deviceId);
-    
-    // Optional: Show in UI for debugging
-    const debugElement = document.createElement('div');
-    debugElement.style.position = 'fixed';
-    debugElement.style.bottom = '10px';
-    debugElement.style.right = '10px';
-    debugElement.style.background = 'rgba(0,0,0,0.8)';
-    debugElement.style.color = 'white';
-    debugElement.style.padding = '5px';
-    debugElement.style.fontSize = '10px';
-    debugElement.style.zIndex = '9999';
-    debugElement.style.borderRadius = '5px';
-    debugElement.textContent = `Device: ${deviceId.substring(0, 10)}...`;
-    debugElement.title = deviceId;
-    document.body.appendChild(debugElement);
-}
-    
-    // Initialize app
     loadDomains().then(() => {
         console.log('✅ Domains loaded');
         
@@ -2795,8 +2828,10 @@ function initApp() {
         }
     });
     
-    // Set up periodic session validation
     setInterval(validateCurrentSession, 30000);
+    
+    // ✅ START BAN MONITORING
+    startBanMonitoring();
 }
 
 function setupEventListeners() {
