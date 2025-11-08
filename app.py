@@ -19,10 +19,20 @@ import mailparser
 import html2text
 from bs4 import BeautifulSoup
 import time as time_module
-#from psycopg2 import OperationalError
+from psycopg2 import OperationalError
+
+app = Flask(__name__)
+
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["https://aungmyomyatzaw.online", "http://localhost:5000"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Accept"],
+        "supports_credentials": True
+    }
+})
 
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1143,7 +1153,7 @@ def get_banned_devices():
 @app.route('/api/admin/ban-device', methods=['POST'])
 @admin_required
 def ban_device():
-    """Ban a device"""
+    """Ban a device - allow re-banning already banned devices"""
     try:
         data = request.get_json() or {}
         device_id = data.get('device_id', '').strip()
@@ -1155,32 +1165,38 @@ def ban_device():
         conn = get_db()
         c = conn.cursor()
         
-        # Check if already banned
-        c.execute('SELECT device_id FROM banned_devices WHERE device_id = %s', (device_id,))
-        if c.fetchone():
-            conn.close()
-            return jsonify({'error': 'Device is already banned'}), 409
+        # Check if device is already banned
+        c.execute('SELECT id, is_active FROM banned_devices WHERE device_id = %s', (device_id,))
+        existing = c.fetchone()
         
-        # Ban the device
-        c.execute('''
-            INSERT INTO banned_devices (device_id, banned_at, banned_by, reason)
-            VALUES (%s, %s, %s, %s)
-        ''', (device_id, datetime.now(), 'admin', reason))
-        
-        # End all active sessions for this device
-        c.execute('''
-            UPDATE sessions 
-            SET is_active = FALSE 
-            WHERE session_token IN (
-                SELECT session_token FROM device_sessions 
+        if existing:
+            # Device already exists - just update it to active
+            c.execute('''
+                UPDATE banned_devices
+                SET is_active = TRUE, banned_at = %s, reason = %s
                 WHERE device_id = %s
-            )
+            ''', (datetime.now(), reason or 'Admin ban', device_id))
+            
+            logger.info(f"✅ Re-activated ban for device: {device_id}")
+        else:
+            # Insert new ban
+            c.execute('''
+                INSERT INTO banned_devices (device_id, reason, banned_at, is_active)
+                VALUES (%s, %s, %s, TRUE)
+            ''', (device_id, reason or 'Admin ban', datetime.now()))
+            
+            logger.info(f"✅ Banned device: {device_id}")
+        
+        # End all sessions for this device
+        c.execute('''
+            UPDATE sessions
+            SET is_active = FALSE
+            WHERE device_id = %s AND is_active = TRUE
         ''', (device_id,))
         
         conn.commit()
         conn.close()
         
-        logger.info(f"✅ Device banned: {device_id} - Reason: {reason}")
         return jsonify({'success': True, 'message': f'Device {device_id} banned successfully'})
         
     except Exception as e:
@@ -1190,33 +1206,36 @@ def ban_device():
 @app.route('/api/admin/unban-device/<device_id>', methods=['POST'])
 @admin_required
 def unban_device(device_id):
-    """Unban a device"""
+    """Unban a device - allow unbanning already unbanned devices"""
     try:
         conn = get_db()
         c = conn.cursor()
         
         # Check if device exists
-        c.execute('SELECT device_id FROM banned_devices WHERE device_id = %s', (device_id,))
-        if not c.fetchone():
+        c.execute('SELECT id, is_active FROM banned_devices WHERE device_id = %s', (device_id,))
+        existing = c.fetchone()
+        
+        if not existing:
             conn.close()
             return jsonify({'error': 'Device not found in ban list'}), 404
         
-        # Unban the device
+        # Update to inactive (unbanned)
         c.execute('''
-            UPDATE banned_devices 
-            SET is_active = FALSE 
+            UPDATE banned_devices
+            SET is_active = FALSE
             WHERE device_id = %s
         ''', (device_id,))
         
         conn.commit()
         conn.close()
         
-        logger.info(f"✅ Device unbanned: {device_id}")
+        logger.info(f"✅ Unbanned device: {device_id}")
         return jsonify({'success': True, 'message': f'Device {device_id} unbanned successfully'})
         
     except Exception as e:
         logger.error(f"❌ Error unbanning device: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/admin/device-sessions', methods=['GET'])
 @admin_required
