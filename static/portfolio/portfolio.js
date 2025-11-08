@@ -2050,29 +2050,10 @@ function updateVisibleSection() {
     startHomeAnimations();
     isHomeVisible = true;
   } else if (!isOnHome && isHomeVisible) {
-    stopHomeAnimations();
     isHomeVisible = false;
   }
 }
 
-function stopHomeAnimations() {
-  if (mainAnimationId) {
-    cancelAnimationFrame(mainAnimationId);
-    mainAnimationId = null;
-  }
-  if (matrixAnimationId) {
-    cancelAnimationFrame(matrixAnimationId);
-    matrixAnimationId = null;
-  }
-  const canvas3D = document.getElementById('canvas-3d');
-  const matrixCanvas = document.getElementById('matrix-canvas');
-  if (canvas3D && canvas3D.style.display !== 'none') {
-    canvas3D.style.display = 'none';
-  }
-  if (matrixCanvas && matrixCanvas.style.display !== 'none') {
-    matrixCanvas.style.display = 'none';
-  }
-}
 
 function startHomeAnimations() {
   const canvas3D = document.getElementById('canvas-3d');
