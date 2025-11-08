@@ -1,2859 +1,2710 @@
-// Configuration
-const API_URL = window.location.origin;
-const SESSION_TIMEOUT = 60 * 60 * 1000; // 1 hour
+from flask import Flask, redirect, request, jsonify, render_template, send_from_directory, session
+from flask_cors import CORS
+import os
+import requests
+import random
+import string
+from datetime import datetime, timedelta
+import email
+from email import policy
+from functools import wraps
+import secrets
+from threading import Thread
+import time
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import logging
+import re
+import mailparser 
+import html2text
+from bs4 import BeautifulSoup
+import time as time_module
+from psycopg2 import OperationalError
 
-// State variables
-let currentEmail = '';
-let sessionToken = ''; 
-let autoRefreshInterval = null;
-let timeUpdateInterval = null;
-let lastEmailCount = 0;
-let sessionId = generateSessionId();
-let emailSecurityKey = generateSecurityKey();
-let sessionStartTime = null;
-let domainsLoaded = false;
-let isAdminMode = false;
-let isAccessMode = false;
-let accessStartTime = null;
-let banCheckInterval = null;
+app = Flask(__name__)
 
-// Initialize functions when DOM is loaded
-document.addEventListener('DOMContentLoaded', function() {
-    initApp();
-    setupEventListeners();
-});
-
-
-// Utility Functions
-// Generate device ID if not exists
-function getOrCreateDeviceId() {
-    let deviceId = localStorage.getItem('tempMailDeviceId');
-    if (!deviceId) {
-        deviceId = 'device_' + Math.random().toString(36).substr(2, 16) + '_' + Date.now();
-        localStorage.setItem('tempMailDeviceId', deviceId);
-        console.log('📱 Generated new Device ID:', deviceId);
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["https://aungmyomyatzaw.online", "http://localhost:5000"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Accept"],
+        "supports_credentials": True
     }
-    return deviceId;
-}
+})
 
-// Check if device is banned
-function checkDeviceBan() {
-    const deviceId = getOrCreateDeviceId();
-    
-    // This will be checked in the create endpoint
-    console.log('📱 Device ID:', deviceId);
-    return deviceId;
-}
 
-function showBannedScreen(reason = 'Multiple policy violations detected') {
-    // Stop all intervals
-    if (autoRefreshInterval) clearInterval(autoRefreshInterval);
-    if (timeUpdateInterval) clearInterval(timeUpdateInterval);
-    if (banCheckInterval) clearInterval(banCheckInterval);
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+MALE_NAMES = ['james', 'john', 'robert', 'michael', 'william', 'david', 'richard', 'joseph', 'thomas', 'charles', 
+              'daniel', 'matthew', 'anthony', 'mark', 'paul', 'steven', 'andrew', 'joshua', 'kevin', 'brian',
+              'george', 'kenneth', 'edward', 'ryan', 'jacob', 'nicholas', 'tyler', 'samuel', 'benjamin', 'alexander']
+
+FEMALE_NAMES = ['mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan', 'jessica', 'sarah', 'karen',
+                'nancy', 'lisa', 'betty', 'margaret', 'sandra', 'ashley', 'kimberly', 'emily', 'donna', 'michelle',
+                'dorothy', 'carol', 'amanda', 'melissa', 'deborah', 'stephanie', 'rebecca', 'sharon', 'laura', 'grace']
+
+# Initial blacklist - will be stored in database
+INITIAL_BLACKLIST = ['ammz', 'admin', 'owner', 'root', 'system', 'az', 'c']
+
+app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', secrets.token_urlsafe(32))
+app.config.update(
+    SESSION_COOKIE_SECURE=False,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=timedelta(minutes=30),  # Shorter session
+    SESSION_REFRESH_EACH_REQUEST=False  # Don't refresh on each request
+)
+CORS(app, origins=[os.getenv('FRONTEND_URL', '*')], supports_credentials=True)
+
+APP_PASSWORD = os.getenv('APP_PASSWORD')
+DOMAIN = os.getenv('DOMAIN', 'aungmyomyatzaw.online')
+DATABASE_URL = os.getenv('DATABASE_URL')
+LAMBDA_API_URL = os.getenv('LAMBDA_API_URL')
+
+def is_device_banned(device_id):
+    """Check if device is banned"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('''
+            SELECT device_id FROM banned_devices 
+            WHERE device_id = %s AND is_active = TRUE
+        ''', (device_id,))
+        result = c.fetchone()
+        conn.close()
+        return result is not None
+    except Exception as e:
+        logger.error(f"Error checking device ban: {e}")
+        return False
+
+def track_device_session(device_id, email_address, session_token, user_agent=None, ip_address=None):
+    """Track device session for analytics and banning"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO device_sessions (device_id, email_address, session_token, created_at, user_agent, ip_address)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        ''', (device_id, email_address, session_token, datetime.now(), user_agent, ip_address))
+        conn.commit()
+        conn.close()
+        logger.info(f"📱 Device session tracked: {device_id} -> {email_address}")
+    except Exception as e:
+        logger.error(f"Error tracking device session: {e}")
+
+# Enhanced database connection with retry logic
+def get_db():
+    max_retries = 1
+    retry_delay = 1
     
-    // Clear session data
-    currentEmail = '';
-    sessionToken = '';
-    localStorage.removeItem('tempmail_session');
-    sessionStorage.clear();
-    
-    // Create overlay
-    const overlay = document.createElement('div');
-    overlay.id = 'ban-overlay';
-    overlay.innerHTML = `
-        <!-- All your existing styles -->
+    for attempt in range(max_retries):
+        try:
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            return conn
+        except psycopg2.OperationalError as e:
+            logger.warning(f"Database connection attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time_module.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error("All database connection attempts failed")
+                raise
+def migrate_existing_emails():
+    """Migrate existing emails to ensure all emails for same address are grouped"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
         
-        <div class="ban-modal">
-            <!-- ... existing code ... -->
+        # Find emails with NULL session_token and try to associate them with sessions
+        c.execute('''
+            UPDATE emails e
+            SET session_token = (
+                SELECT s.session_token 
+                FROM sessions s 
+                WHERE s.email_address = e.recipient 
+                AND s.created_at <= e.received_at 
+                AND s.expires_at >= e.received_at
+                ORDER BY s.created_at DESC 
+                LIMIT 1
+            )
+            WHERE e.session_token IS NULL
+        ''')
+        
+        updated_count = c.rowcount
+        conn.commit()
+        conn.close()
+        
+        if updated_count > 0:
+            logger.info(f"✅ Migrated {updated_count} emails to proper session association")
+        
+    except Exception as e:
+        logger.warning(f"Migration note: {e}")
+
+
+
+def init_db():
+    try:
+        conn = get_db()
+        conn.autocommit = True
+        c = conn.cursor()
+        
+        # Sessions table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_token TEXT PRIMARY KEY,
+                email_address TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                last_activity TIMESTAMP NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                is_access_code BOOLEAN DEFAULT FALSE
+            )
+        ''')
+
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS emails (
+                id SERIAL PRIMARY KEY,
+                recipient TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                subject TEXT,
+                body TEXT,
+                timestamp TEXT,
+                received_at TIMESTAMP NOT NULL,
+                session_token TEXT
+            )
+        """)
+        
+        # Blacklist table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS blacklist (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                added_at TIMESTAMP NOT NULL,
+                added_by TEXT DEFAULT 'system'
+            )
+        ''')
+
+        # Access codes table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS access_codes (
+                id SERIAL PRIMARY KEY,
+                code TEXT UNIQUE NOT NULL,
+                email_address TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                created_at TIMESTAMP NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                used_count INTEGER DEFAULT 0,
+                max_uses INTEGER DEFAULT 1
+            )
+        ''')
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS banned_devices (
+                id SERIAL PRIMARY KEY,
+                device_id TEXT UNIQUE NOT NULL,
+                banned_at TIMESTAMP NOT NULL,
+                banned_by TEXT DEFAULT 'system',
+                reason TEXT DEFAULT '',
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        ''')
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS device_sessions (
+                id SERIAL PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                email_address TEXT NOT NULL,
+                session_token TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                user_agent TEXT,
+                ip_address TEXT
+            )
+        ''')
+
+        # Insert initial blacklist
+        for username in INITIAL_BLACKLIST:
+            try:
+                c.execute('''
+                    INSERT INTO blacklist (username, added_at) 
+                    VALUES (%s, %s)
+                    ON CONFLICT (username) DO NOTHING
+                ''', (username, datetime.now()))
+            except Exception as e:
+                logger.warning(f"Could not insert blacklist user {username}: {e}")
+        
+        indexes = [
+            'CREATE INDEX IF NOT EXISTS idx_recipient ON emails(recipient)',
+            'CREATE INDEX IF NOT EXISTS idx_session ON emails(session_token)',
+            'CREATE INDEX IF NOT EXISTS idx_received_at ON emails(received_at)',
+            'CREATE INDEX IF NOT EXISTS idx_email_address ON sessions(email_address)',
+            'CREATE INDEX IF NOT EXISTS idx_is_active ON sessions(is_active)',
+            'CREATE INDEX IF NOT EXISTS idx_blacklist_username ON blacklist(username)',
+            'CREATE INDEX IF NOT EXISTS idx_device_id ON device_sessions(device_id)',
+            'CREATE INDEX IF NOT EXISTS idx_banned_devices ON banned_devices(device_id, is_active)'
+        ]
+        
+        for index_sql in indexes:
+            try:
+                c.execute(index_sql)
+            except Exception as e:
+                logger.warning(f"Could not create index: {e}")
+        
+        for username in INITIAL_BLACKLIST:
+            try:
+                c.execute('''
+                    INSERT INTO blacklist (username, added_at) 
+                    VALUES (%s, %s)
+                    ON CONFLICT (username) DO NOTHING
+                ''', (username, datetime.now()))
+            except Exception as e:
+                logger.warning(f"Could not insert blacklist user {username}: {e}")
+
+        conn.close()
+
+        migrate_existing_emails()
+
+        logger.info("✅ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed: {e}")
+
+# Admin required decorator
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('admin_authenticated'):
+            return jsonify({'error': 'Unauthorized'}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def is_username_blacklisted(username):
+    """Check if username is blacklisted in database"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT username FROM blacklist WHERE username = %s', (username.lower(),))
+        result = c.fetchone()
+        conn.close()
+        return result is not None
+    except Exception as e:
+        logger.error(f"Error checking blacklist: {e}")
+        return username.lower() in INITIAL_BLACKLIST
+
+# Enhanced email parsing with better error handling
+def parse_email_with_mailparser(raw_email):
+    try:
+        mail = mailparser.parse_from_string(raw_email)
+        
+        # Basic validation
+        if not hasattr(mail, 'from_') or not mail.from_:
+            logger.warning("Email has no sender information")
+            return parse_email_fallback(raw_email)
+        
+        parsed_data = {
+            'subject': mail.subject or 'No subject',
+            'from_email': get_clean_sender(mail),
+            'to': get_clean_recipient(mail),
+            'date': mail.date.isoformat() if mail.date else None,
+            'body_plain': '',
+            'body_html': '',
+            'verification_codes': [],
+            'attachments': len(mail.attachments) if hasattr(mail, 'attachments') else 0
+        }
+        
+        # Get ALL available text content
+        all_text_parts = []
+        
+        # Add subject to search context
+        if mail.subject:
+            all_text_parts.append(mail.subject)
+        
+        # Add plain text body
+        if hasattr(mail, 'text_plain') and mail.text_plain:
+            plain_text = '\n'.join(mail.text_plain) if isinstance(mail.text_plain, list) else str(mail.text_plain)
+            parsed_data['body_plain'] = plain_text
+            all_text_parts.append(plain_text)
+        elif hasattr(mail, 'body') and mail.body:
+            parsed_data['body_plain'] = mail.body
+            all_text_parts.append(mail.body)
+        
+        # Add HTML body (converted to text for code extraction)
+        if hasattr(mail, 'text_html') and mail.text_html:
+            html_content = '\n'.join(mail.text_html) if isinstance(mail.text_html, list) else str(mail.text_html)
+            parsed_data['body_html'] = html_content
             
-            <div class="reason-box">
-                <div class="reason-label">
-                    <svg style="width: 18px; height: 18px;" fill="currentColor" viewBox="0 0 20 20">
-                        <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
-                    </svg>
-                    Ban Reason
-                </div>
-                <div class="reason-text">${reason}</div> 
-            </div>
+            # Convert HTML to text for better code extraction
+            try:
+                h = html2text.HTML2Text()
+                h.ignore_links = True
+                h.ignore_images = True
+                h.ignore_tables = True
+                html_as_text = h.handle(html_content)
+                all_text_parts.append(html_as_text)
+            except Exception as e:
+                logger.warning(f"HTML to text conversion failed: {e}")
+                all_text_parts.append(html_content)
+        
+        # Combine all text for code extraction
+        combined_text = ' '.join(all_text_parts)
+        
+        # Extract codes from combined text
+        parsed_data['verification_codes'] = extract_verification_codes(combined_text)
+        
+        logger.info(f"✅ Email parsed: {parsed_data['from_email']} -> Subject: '{parsed_data['subject']}', Codes: {parsed_data['verification_codes']}")
+        return parsed_data
+        
+    except Exception as e:
+        logger.error(f"❌ mail-parser error: {e}")
+        return parse_email_fallback(raw_email)
+
+def get_clean_sender(mail):
+    """Extract clean sender address"""
+    if mail.from_:
+        if isinstance(mail.from_[0], (list, tuple)):
+            return mail.from_[0][1] if len(mail.from_[0]) > 1 else str(mail.from_[0][0])
+        elif hasattr(mail.from_[0], 'email'):
+            return mail.from_[0].email
+        else:
+            return str(mail.from_[0])
+    return 'Unknown'
+
+def get_clean_recipient(mail):
+    """Extract clean recipient address"""
+    if mail.to:
+        if isinstance(mail.to[0], (list, tuple)):
+            return mail.to[0][1] if len(mail.to[0]) > 1 else str(mail.to[0][0])
+        elif hasattr(mail.to[0], 'email'):
+            return mail.to[0].email
+        else:
+            return str(mail.to[0])
+    return 'Unknown'
+
+def extract_verification_codes(text):
+    """Extract verification codes with more patterns"""
+    if not text:
+        return []
+    
+    codes = []
+    
+    # Enhanced patterns for common verification code formats
+    patterns = [
+        # ChatGPT specific patterns - FIXED
+        r'Your ChatGPT code is\s*(\d{6})',
+        r'temporary verification code:\s*(\d{6})',
+        r'verification code:\s*(\d{6})',
+        r'enter.*code:\s*(\d{6})',
+        r'code is:\s*(\d{6})',
+        r'code:\s*(\d{6})',
+        
+        # General patterns
+        r'(?:code|verification|verify|confirmation|security|otp|pin)[\s:\-]*[#]?\s*(\d{4,8})\b',
+        r'\b(\d{4,8})\s*(?:is your|is the|is my|your|code|verification|OTP|PIN)\b',
+        r'\b(?:enter|use|type|input)[\s\w]*[:]?\s*(\d{4,8})\b',
+    ]
+    
+    for pattern in patterns:
+        try:
+            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                if match.groups():
+                    code = match.group(1)
+                    if code and len(code) >= 4 and code not in codes:
+                        codes.append(code)
+                        logger.info(f"🔍 Found verification code: {code} with pattern: {pattern}")
+        except Exception as e:
+            logger.warning(f"Pattern error {pattern}: {e}")
+            continue
+    
+    # Also look for standalone 6-digit codes in context
+    if not codes:
+        # Find all 6-digit numbers
+        six_digit_matches = re.finditer(r'\b(\d{6})\b', text)
+        for match in six_digit_matches:
+            code = match.group(1)
+            # Check if this appears near verification keywords
+            start_pos = max(0, match.start() - 50)
+            end_pos = min(len(text), match.end() + 50)
+            context = text[start_pos:end_pos].lower()
             
-            <!-- ... rest of code ... -->
-        </div>
-    `;
-    
-    document.body.appendChild(overlay);
-    
-    // Prevent interactions
-    overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) {
-            e.stopPropagation();
-            e.preventDefault();
-        }
-    });
-    
-    document.querySelectorAll('input, button, textarea, select, a').forEach(el => {
-        if (!overlay.contains(el)) {
-            el.style.pointerEvents = 'none';
-            el.disabled = true;
-        }
-    });
-    
-    document.body.style.overflow = 'hidden';
-}
-
-
-// Check for ban on page load
-function checkBanOnLoad() {
-    // This will be handled by the API responses
-    console.log('🔍 Checking device status...');
-}
-
-function generateSessionId() {
-    return 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-}
-
-function generateSecurityKey() {
-    return 'key_' + Math.random().toString(36).substr(2, 16);
-}
-
-function validateEmail(email) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(email);
-}
-
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-function improvedCleanEmailBody(rawBody) {
-    // Email is now pre-cleaned by backend with mail-parser
-    // Just return the HTML as-is
-    if (!rawBody || rawBody.trim() === '') {
-        return '<p class="text-gray-400 text-center py-8">No content available</p>';
-    }
-    
-    return rawBody;
-}
-
-function formatTime(timestamp) {
-    try {
-        let date;
-        
-        // Handle different timestamp formats
-        if (typeof timestamp === 'string') {
-            // Remove any timezone info and treat as UTC
-            const cleanTimestamp = timestamp.replace(/[\+\-]\d{2}:?\d{2}$/, '');
-            date = new Date(cleanTimestamp + 'Z');
+            verification_keywords = [
+                'verification', 'verify', 'code', 'confirm', 'security', 
+                'temporary', 'chatgpt', 'openai', 'enter', 'use', 'input'
+            ]
             
-            // If still invalid, try direct parsing
-            if (isNaN(date.getTime())) {
-                date = new Date(timestamp);
-            }
-        } else if (typeof timestamp === 'number') {
-            // Assume it's already a Unix timestamp in milliseconds
-            date = new Date(timestamp);
-        } else {
-            return 'recently';
-        }
-        
-        // Final check for valid date
-        if (isNaN(date.getTime())) {
-            return 'recently';
-        }
-        
-        // Convert to Myanmar Time (UTC+6:30)
-        const utcTime = date.getTime();
-        const myanmarOffset = 6.5 * 60 * 60 * 1000; // 6.5 hours in milliseconds
-        const myanmarTime = new Date(utcTime + myanmarOffset);
-        
-        // Get current time in Myanmar timezone
-        const nowUtc = new Date().getTime();
-        const nowMyanmar = new Date(nowUtc + myanmarOffset);
-        
-        const diff = nowMyanmar - myanmarTime;
-        const seconds = Math.floor(diff / 1000);
-        const minutes = Math.floor(seconds / 60);
-        const hours = Math.floor(minutes / 60);
-        const days = Math.floor(hours / 24);
-        
-        // Return relative time
-        if (seconds < 60) return 'just now';
-        if (minutes < 60) return minutes + ' min ago';
-        if (hours < 24) return hours + ' hour' + (hours > 1 ? 's' : '') + ' ago';
-        if (days < 7) return days + ' day' + (days > 1 ? 's' : '') + ' ago';
-        
-        // For dates older than a week, show actual date
-        return myanmarTime.toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-        
-    } catch (e) {
-        console.error('Error formatting time:', e);
-        return 'recently';
-    }
-}
+            if any(keyword in context for keyword in verification_keywords):
+                if code not in codes:
+                    codes.append(code)
+                    logger.info(f"🔍 Found contextual code: {code} in context: {context}")
+    
+    # Remove duplicates
+    seen = set()
+    unique_codes = [code for code in codes if not (code in seen or seen.add(code))]
+    
+    logger.info(f"✅ Final extracted codes: {unique_codes}")
+    return unique_codes
 
-function openAccessModal() {
-    console.log('🚪 Access button clicked - checking session state...');
-
-    if (window.accessModalOpening) {
-        console.log('🛑 Access modal already opening, ignoring click');
-        return;
-    }
-    window.accessModalOpening = true;
+def clean_sender_address(sender):
+    """Clean sender address from common formats"""
+    if not sender:
+        return 'Unknown'
     
-    // ✅ FIRST: Check if we have an active access code session in localStorage
-    const savedAccessCodes = getAccessCodesFromLocalStorage();
-    const currentDeviceId = generateDeviceId();
-    const now = new Date();
+    # Extract email from "Name <email@domain.com>" format
+    if '<' in sender and '>' in sender:
+        email_match = re.search(r'<([^>]+)>', sender)
+        if email_match:
+            return email_match.group(1)
     
-    // Look for active access code sessions for this device
-    const activeAccessSession = savedAccessCodes.find(accessCode => {
-        return accessCode.device_id === currentDeviceId && 
-               new Date(accessCode.expires_at) > now;
-    });
+    # Clean bounce addresses
+    if 'bounce' in sender.lower():
+        if '@' in sender:
+            domain_part = sender.split('@')[1]
+            if 'openai.com' in domain_part or 'mandrillapp.com' in domain_part:
+                return 'ChatGPT'
+            elif 'afraid.org' in domain_part:
+                return 'FreeDNS'
+            else:
+                return 'Notification'
     
-    console.log('🔐 Active access session found:', !!activeAccessSession);
-    
-    // ✅ If active access session exists, RESTORE it immediately
-    if (activeAccessSession && !isAccessMode) {
-        console.log('🔐 Active access session found in localStorage, restoring...', activeAccessSession.email);
-        
-        showNotification('🔐 Restoring access session...', 'info');
-        
-        // ✅ FIRST: Kill any current normal session
-        if (currentEmail && sessionToken && !isAccessMode) {
-            console.log('🔄 Ending current normal session before restoring access session');
-            endCurrentSessionForNewEmail().then(() => {
-                // After ending normal session, restore access session
-                restoreAccessSession(activeAccessSession);
-            });
-        } else {
-            // No normal session to end, restore directly
-            restoreAccessSession(activeAccessSession);
-        }
-        
-        return; // ✅ EXIT EARLY - don't proceed to show modal
-    }
-    
-    // ✅ If already IN access mode, just show the session (no modal)
-    if (isAccessMode && currentEmail) {
-        console.log('🔐 Already in access mode - showing session');
-        document.getElementById('access-mode-display').classList.remove('hidden');
-        document.getElementById('mail-creation-section').classList.add('hidden');
-        document.getElementById('mail-controls-section').classlist.add('hidden');
-        return;
-    }
-    
-    // ✅ No active access session - show code input modal
-    console.log('📭 No active access session - showing code modal');
-    showAccessModal();
-}
-
-function restoreAccessSession(activeAccessSession) {
-    // Verify session is still valid with backend
-    fetch(`${API_URL}/api/emails/${encodeURIComponent(activeAccessSession.email)}`, {
-        headers: {
-            'X-Session-Token': activeAccessSession.session_token,
-            'Content-Type': 'application/json'
-        }
-    })
-    .then(res => {
-        if (res.ok) {
-            // Session is valid, restore it
-            console.log('✅ Backend session validation successful');
-            restoreAccessCodeSession(activeAccessSession);
-        } else {
-            // Session expired, remove from localStorage and show code modal
-            console.log('❌ Access session expired, removing from localStorage');
-            removeAccessCodeFromLocalStorage(activeAccessSession.email);
-            showAccessModal();
-        }
-    })
-    .catch(err => {
-        console.log('❌ Error verifying access session, showing code modal:', err);
-        showAccessModal();
-    });
-}
+    return sender.strip()
 
 
-// UI Functions
-function showModal(title, message, confirmCallback) {
-    const modal = document.getElementById('custom-modal');
-    const modalTitle = document.getElementById('modal-title');
-    const modalMessage = document.getElementById('modal-message');
-    const modalConfirm = document.getElementById('modal-confirm');
-    const modalCancel = document.getElementById('modal-cancel');
-    
-    modalTitle.textContent = title;
-    modalMessage.textContent = message;
-    modal.classList.remove('hidden');
-    
-    // Remove previous event listeners
-    const newConfirm = modalConfirm.cloneNode(true);
-    const newCancel = modalCancel.cloneNode(true);
-    modalConfirm.parentNode.replaceChild(newConfirm, modalConfirm);
-    modalCancel.parentNode.replaceChild(newCancel, modalCancel);
-    
-    // Add new event listeners
-    document.getElementById('modal-confirm').onclick = function() {
-        modal.classList.add('hidden');
-        if (confirmCallback) confirmCallback();
-    };
-    
-    document.getElementById('modal-cancel').onclick = function() {
-        modal.classList.add('hidden');
-    };
-}   
-
-function copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(function() {
-        // Show success notification
-        showNotification('✅ Verification code copied: ' + text, 'success');
-    }).catch(function() {
-        // Fallback for older browsers
-        const textArea = document.createElement('textarea');
-        textArea.value = text;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-        showNotification('✅ Verification code copied: ' + text, 'success');
-    });
-}
-
-function showNotification(message, type) {
-    const notif = document.getElementById('notification');
-    const text = document.getElementById('notification-text');
-    text.textContent = message;
-    
-    let bgColor = 'bg-blue-600';
-    if (type === 'success') {
-        bgColor = 'bg-green-600';
-    } else if (type === 'error') {
-        bgColor = 'bg-red-600';
-    } else if (type === 'info') {
-        bgColor = 'bg-blue-600';
-    }
-    
-    notif.className = `text-center mb-2 md:mb-4 p-2 md:p-4 rounded-xl text-white font-medium text-sm md:text-base ${bgColor}`;
-    notif.classList.remove('hidden');
-    setTimeout(() => notif.classList.add('hidden'), 3000);
-}
-
-function handleApiError(error, defaultMessage = "An error occurred") {
-    console.error("API Error:", error);
-    
-    if (error.message && error.message.includes("Failed to fetch")) {
-        showNotification("Network error - check your connection", "error");
-    } else if (error.message && (error.message.includes("403") || error.message.includes("Session expired"))) {
-        showNotification("Session expired - creating new session", "error");
-        clearSession();
-    } else if (error.message && (error.message.includes("401") || error.message.includes("Session expired") || error.message.includes("Session has been ended"))) {
-        showNotification("Session ended - creating new session", "error");
-        clearSession();
-    } else if (error.message && error.message.includes("409")) {
-        showNotification("This email is already in use by another session", "error");
-    } else if (error.message && error.message.includes("404")) {
-        // This is normal for new emails
-        return;
-    } else {
-        showNotification(error.message || defaultMessage, "error");
-    }
-}
-
-
-function clearSession() {
-    console.log('🔄 Clearing ALL sessions for fresh start...');
-    
-    // Clear ALL frontend state
-    currentEmail = '';
-    sessionToken = '';
-    sessionStartTime = null;
-    // Note: We keep isAccessMode=true when in access mode
-    // accessStartTime = null; // Keep this for access mode timer
-
-    // Stop all intervals
-    if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-        autoRefreshInterval = null;
-        console.log('✅ Auto-refresh stopped');
-    }
-    if (timeUpdateInterval) {
-        clearInterval(timeUpdateInterval);
-        timeUpdateInterval = null;
-        console.log('✅ Time updates stopped');
-    }
-    
-    // Clear any session expiration timeout
-    if (window.sessionExpirationTimeout) {
-        clearTimeout(window.sessionExpirationTimeout);
-        window.sessionExpirationTimeout = null;
-    }
-    
-    // Clear any pending email fetch requests
-    if (window.emailFetchController) {
-        window.emailFetchController.abort();
-        window.emailFetchController = null;
-    }
-
-    // Clear localStorage (only normal sessions)
-    localStorage.removeItem('tempMailSession');
-    
-    // Reset UI to fresh state
-    document.getElementById('username-input').value = '';
-    document.getElementById('domain-select').selectedIndex = 0;
-    document.getElementById('email-display').classList.add('hidden');
-    document.getElementById('end-session-btn').classList.add('hidden');
-    document.getElementById('email-count').textContent = '0 emails';
-    document.getElementById('email-list').innerHTML = '';
-    document.getElementById('no-emails-default').style.display = 'flex';
-    
-    // Reset email view
-    document.getElementById('desktop-email-placeholder').style.display = 'flex';
-    document.getElementById('desktop-email-content-inner').classList.add('hidden');
-    
-    // Reset title
-    document.title = 'TempMail - AMMZ';
-    
-    console.log('✅ Normal session cleared - Fresh interface ready');
-}
-
-// Add this function to fix access code expiration time
-function getAccessCodeTimeRemaining(expiresAt) {
-    try {
-        let date;
+def parse_email_fallback(raw_email):
+    """Fallback parsing when mail-parser fails"""
+    try:
+        msg = email.message_from_string(raw_email, policy=policy.default)
         
-        if (typeof expiresAt === 'string') {
-            // Use same parsing logic as emails
-            const cleanTimestamp = expiresAt.replace(/[\+\-]\d{2}:?\d{2}$/, '');
-            date = new Date(cleanTimestamp + 'Z');
-            
-            if (isNaN(date.getTime())) {
-                date = new Date(expiresAt);
-            }
-        } else {
-            date = new Date(expiresAt);
-        }
-        
-        if (isNaN(date.getTime())) {
-            return 'Expired';
-        }
-        
-        // Convert to Myanmar Time (UTC+6:30) - SAME AS EMAILS
-        const utcTime = date.getTime();
-        const myanmarOffset = 6.5 * 60 * 60 * 1000;
-        const myanmarExpireTime = new Date(utcTime + myanmarOffset);
-        
-        // Get current time in Myanmar timezone
-        const nowUtc = new Date().getTime();
-        const nowMyanmar = new Date(nowUtc + myanmarOffset);
-        
-        const diff = myanmarExpireTime - nowMyanmar;
-        
-        if (diff <= 0) return 'Expired';
-        
-        const minutes = Math.floor(diff / (1000 * 60));
-        const hours = Math.floor(minutes / 60);
-        const days = Math.floor(hours / 24);
-        
-        // Format like email times but for future
-        if (days > 0) return `${days}d ${hours % 24}h ${minutes % 60}m`;
-        if (hours > 0) return `${hours}h ${minutes % 60}m`;
-        if (minutes > 0) return `${minutes}m`;
-        return '<1m';
-        
-    } catch (e) {
-        console.error('Error calculating access code time remaining:', e);
-        return 'Error';
-    }
-}
-
-function loadSession() {
-    const savedSession = localStorage.getItem('tempMailSession');
-    const savedAccessCodes = getAccessCodesFromLocalStorage();
-    const currentDeviceId = generateDeviceId();
-    const now = new Date();
-    
-    // First priority: Restore access code sessions
-    for (const accessCode of savedAccessCodes) {
-        if (accessCode.device_id === currentDeviceId && new Date(accessCode.expires_at) > now) {
-            console.log('🔐 Found active access code session:', accessCode.email);
-            
-            // Verify the session is still valid with backend
-            fetch(`${API_URL}/api/emails/${encodeURIComponent(accessCode.email)}`, {
-                headers: {
-                    'X-Session-Token': accessCode.session_token,
-                    'Content-Type': 'application/json'
-                }
-            })
-            .then(res => {
-                if (res.ok) {
-                    // Session is still valid, restore it
-                    restoreAccessCodeSession(accessCode);
-                    return true;
-                } else {
-                    // Session expired or invalid, remove from localStorage
-                    removeAccessCodeFromLocalStorage(accessCode.email);
-                    return false;
-                }
-            })
-            .catch(() => {
-                removeAccessCodeFromLocalStorage(accessCode.email);
-                return false;
-            });
-            
-            return; // Stop checking other sessions
-        }
-    }
-    
-    // Second priority: Restore normal sessions (only if no access mode)
-    if (savedSession && !isAccessMode) {
-        try {
-            const session = JSON.parse(savedSession);
-            const sessionAge = Date.now() - session.createdAt;
-            const sessionValid = sessionAge < SESSION_TIMEOUT;
-            
-            if (sessionValid && session.email && session.sessionToken) {
-                // Restore normal session
-                currentEmail = session.email;
-                sessionToken = session.sessionToken;
-                sessionStartTime = session.createdAt;
+        # Use your old extract_content_from_mime logic but simplified
+        body_content = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                content_disposition = str(part.get("Content-Disposition", ""))
                 
-                console.log('🔄 Normal session restored from localStorage:', currentEmail);
+                if "attachment" in content_disposition:
+                    continue
                 
-                if (domainsLoaded) {
-                    restoreSessionUI();
-                }
-                return true;
-            } else {
-                localStorage.removeItem('tempMailSession');
-            }
-        } catch (e) {
-            localStorage.removeItem('tempMailSession');
-        }
-    }
-    
-    console.log('📭 No valid session found in localStorage');
-    return false;
-}
-
-// Add this to restoreAccessCodeSession to set access mode colors
-function restoreAccessCodeSession(accessCode) {
-    console.log('🔄 Restoring access code session from localStorage');
-    
-    isAccessMode = true;
-    accessStartTime = new Date(accessCode.access_start_time);
-    currentEmail = accessCode.email;
-    sessionToken = accessCode.session_token;
-    sessionStartTime = Date.now();
-
-    // Show/hide description section
-    const descriptionSection = document.getElementById('access-description-section');
-    const descriptionText = document.getElementById('access-description-text');
-    
-    if (accessCode.description && accessCode.description.trim() !== '') {
-        descriptionText.textContent = accessCode.description;
-        descriptionSection.classList.remove('hidden');
-    } else {
-        descriptionSection.classList.add('hidden');
-    }
-    
-    // ✅ FORCE SHOW EMAIL LIST VIEW (not email content view)
-    showEmailList();
-
-    // ✅ ADD ACCESS MODE COLOR
-    document.body.classList.add('access-mode-active');
-    
-    // Update UI for access mode
-    document.getElementById('access-mode-display').classList.remove('hidden');
-    document.getElementById('mail-creation-section').classList.add('hidden');
-    document.getElementById('mail-controls-section').classList.add('hidden');
-    
-    document.getElementById('access-email-display').textContent = currentEmail;
-    document.getElementById('current-email').innerHTML = `
-        ${currentEmail} 
-        <span class="bg-blue-500 text-white px-2 py-1 rounded text-xs ml-2">ACCESS CODE</span>
-    `;
-    document.getElementById('email-display').classList.remove('hidden');
-    document.getElementById('end-session-btn').classList.remove('hidden');
-    
-    // Start timer with stored expiration
-    startAccessCodeTimer(accessCode.expires_at);
-    
-    // Clear any normal session intervals
-    clearSessionIntervals();
-    
-    // Load emails and start refresh
-    loadEmails();
-    startAutoRefresh();
-    startTimeUpdate();
-    setupSessionExpiration();
-    
-    // Show description if available
-    if (accessCode.description) {
-        showNotification(`🔐 ${accessCode.description}`, 'info');
-    }
-    
-    console.log('✅ Access code session restored successfully');
-}
-
-
-function startAccessCodeTimer(expiresAt) {
-    console.log('⏰ Starting access code timer with expiration:', expiresAt);
-    
-    // Clear any existing timer
-    if (window.accessCodeTimer) {
-        clearInterval(window.accessCodeTimer);
-    }
-    
-    const updateTimer = () => {
-        const timeRemaining = getAccessCodeTimeRemaining(expiresAt);
-        document.getElementById('access-expire-time').textContent = timeRemaining;
+                try:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        decoded = payload.decode('utf-8', errors='ignore')
+                        if content_type == 'text/plain' and not body_content:
+                            body_content = decoded
+                        elif content_type == 'text/html' and not body_content:
+                            body_content = decoded
+                except Exception:
+                    continue
+        else:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                body_content = payload.decode('utf-8', errors='ignore')
         
-        console.log('⏰ Time remaining:', timeRemaining);
-        
-        if (timeRemaining === 'Expired') {
-            clearInterval(window.accessCodeTimer);
-            document.getElementById('access-expire-time').textContent = 'Expired';
-            showNotification('🔐 Access code session has expired', 'error');
-        }
-    };
-    
-    // Run immediately and every minute
-    updateTimer();
-    window.accessCodeTimer = setInterval(updateTimer, 60000);
-}
-
-
-function restoreSessionUI() {
-    if (!currentEmail || !sessionToken) {
-        console.error('❌ Cannot restore UI: missing email or token');
-        return;
-    }
-    
-    console.log('🔄 Restoring UI for:', currentEmail);
-    
-    const parts = currentEmail.split('@');
-    document.getElementById('username-input').value = parts[0];
-    
-    // ✅ Wait for domain select to be populated
-    const domainSelect = document.getElementById('domain-select');
-    const domain = parts[1];
-    
-    const setDomain = () => {
-        if (domainSelect.querySelector(`option[value="${domain}"]`)) {
-            domainSelect.value = domain;
-            
-            // ✅ Validate session with backend before completing restoration
-            validateSessionWithBackend();
-        } else {
-            // Domain not available yet, try again
-            setTimeout(setDomain, 100);
-        }
-    };
-    
-    setDomain();
-}
-
-function validateSessionWithBackend() {
-    console.log('🔐 Validating session with backend...');
-    
-    fetch(`${API_URL}/api/emails/${encodeURIComponent(currentEmail)}`, {
-        headers: {
-            'X-Session-Token': sessionToken,
-            'Content-Type': 'application/json'
-        }
-    })
-    .then(res => {
-        if (res.ok) {
-            console.log('✅ Backend session validation successful');
-            completeUIRestoration();
-        } else if (res.status === 403) {
-            console.log('❌ Backend session validation failed - session expired');
-            showNotification('Session expired. Creating new session...', 'error');
-            // Clear the invalid session and create a new one
-            localStorage.removeItem('tempMailSession');
-            clearSession();
-        } else {
-            console.log('⚠️ Backend validation issue, proceeding anyway');
-            completeUIRestoration();
-        }
-    })
-    .catch(err => {
-        console.log('⚠️ Network error during validation, proceeding:', err);
-        completeUIRestoration();
-    });
-}
-
-function completeUIRestoration() {
-    // Show the email display
-    document.getElementById('current-email').textContent = currentEmail;
-    document.getElementById('email-display').classList.remove('hidden');
-    document.getElementById('end-session-btn').classList.remove('hidden');
-    
-    showNotification('✅ Session restored', 'success');
-    
-    // Load emails immediately
-    loadEmails();
-    startAutoRefresh();
-    startTimeUpdate();
-    setupSessionExpiration();
-    
-    console.log('✅ UI restoration complete');
-}
-
-function saveSession() {
-    if (!currentEmail || !sessionToken) {
-        console.error('❌ Cannot save session: missing email or token');
-        return;
-    }
-    
-    const session = {
-        email: currentEmail,
-        sessionToken: sessionToken,
-        createdAt: sessionStartTime || Date.now(),
-        lastEmailTime: Date.now(),
-        isAccessMode: isAccessMode,
-        accessStartTime: accessStartTime ? accessStartTime.toISOString() : null
-    };
-    
-    localStorage.setItem('tempMailSession', JSON.stringify(session));
-    console.log('💾 Session saved:', currentEmail, 'Access Mode:', isAccessMode);
-}
-
-window.sessionOperationInProgress = false;
-window.accessModalOpening = false;
-window.emailLoadingInProgress = false;
-
-function endCurrentSessionForNewEmail() {
-    if (window.sessionOperationInProgress) {
-        console.log('🛑 Session operation already in progress');
-        return Promise.resolve();
-    }
-    window.sessionOperationInProgress = true;
-
-    return new Promise((resolve, reject) => {
-        console.log('🔄 Ending current NORMAL session for new email creation...');
-        
-        // ✅ FIX: Don't end access mode sessions
-        if (isAccessMode) {
-            console.log('🔐 Access mode active - skipping session end');
-            resolve();
-            return;
-        }
-        
-        // If no active normal session, just resolve immediately
-        if (!currentEmail || !sessionToken) {
-            console.log('📭 No normal session to end');
-            resolve();
-            return;
-        }
-        
-        // Save current normal session data for backend call
-        const endEmail = currentEmail;
-        const endToken = sessionToken;
-
-        // Clear frontend state immediately (only normal sessions)
-        currentEmail = '';
-        sessionToken = '';
-        sessionStartTime = null;
-        
-        // Clear localStorage (only for normal sessions)
-        localStorage.removeItem('tempMailSession');
-        
-        // Stop all refresh intervals
-        if (autoRefreshInterval) {
-            clearInterval(autoRefreshInterval);
-            autoRefreshInterval = null;
-        }
-        if (timeUpdateInterval) {
-            clearInterval(timeUpdateInterval);
-            timeUpdateInterval = null;
-        }
-        
-        // Clear any session expiration timeout
-        if (window.sessionExpirationTimeout) {
-            clearTimeout(window.sessionExpirationTimeout);
-            window.sessionExpirationTimeout = null;
-        }
-        
-        // Clear any pending email fetch requests
-        if (window.emailFetchController) {
-            window.emailFetchController.abort();
-            window.emailFetchController = null;
-        }
-
-        // Reset UI immediately
-        document.getElementById('username-input').value = '';
-        document.getElementById('domain-select').selectedIndex = 0;
-        document.getElementById('email-display').classList.add('hidden');
-        document.getElementById('end-session-btn').classList.add('hidden');
-        document.getElementById('email-count').textContent = '0 emails';
-        document.getElementById('email-list').innerHTML = '';
-        document.getElementById('no-emails-default').style.display = 'flex';
-        
-        // Reset email view
-        document.getElementById('desktop-email-placeholder').style.display = 'flex';
-        document.getElementById('desktop-email-content-inner').classList.add('hidden');
-        
-        console.log('✅ Frontend normal session cleared for new email');
-
-        // Notify backend to end session (only for normal sessions)
-        if (endEmail && endToken) {
-            console.log('📡 Notifying backend to end previous NORMAL session...');
-            fetch(API_URL + '/api/session/end', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    session_token: endToken,
-                    email_address: endEmail
-                })
-            })
-            .then(res => {
-                if (!res.ok) {
-                    console.log('⚠️ Backend session end failed, but continuing');
-                } else {
-                    console.log('✅ Backend normal session ended');
-                }
-                return res.json();
-            })
-            .then(data => {
-                console.log('✅ Backend confirmed normal session end');
-                resolve(); // Resolve the promise to continue
-            })
-            .catch(err => {
-                console.log('❌ Backend session end error (ignoring):', err);
-                resolve(); // Still resolve to continue creation
-            });
-        } else {
-            // No session to end, just resolve
-            console.log('📭 No backend normal session to end');
-            resolve();
-        }
-    }).finally(() => {
-        window.sessionOperationInProgress = false;
-    });
-}
-
-
-function endSessionBackend() {
-    return new Promise((resolve) => {
-        if (!currentEmail || !sessionToken) {
-            console.log('No session to end');
-            resolve();
-            return;
-        }
-        
-        console.log('Ending backend session for:', currentEmail);
-        
-        fetch(API_URL + '/api/session/end', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                session_token: sessionToken,
-                email_address: currentEmail
-            })
-        })
-        .then(res => {
-            if (!res.ok) {
-                console.log('Backend session end failed, but continuing');
-            }
-            return res.json();
-        })
-        .then(data => {
-            console.log('✅ Backend session ended successfully');
-            resolve();
-        })
-        .catch(err => {
-            console.log('❌ Backend session end error (ignoring):', err);
-            resolve();
-        });
-    });
-}
-
-function setupSessionExpiration() {
-    // Clear any existing timeout
-    if (window.sessionExpirationTimeout) {
-        clearTimeout(window.sessionExpirationTimeout);
-    }
-    
-    // Set new timeout
-    window.sessionExpirationTimeout = setTimeout(function() {
-        showNotification('🕒 Session expired. Please create a new email address.', 'error');
-        clearSession();
-    }, SESSION_TIMEOUT);
-}
-
-function loadEmails() {
-    if (!currentEmail || !sessionToken) {
-        console.log("❌ No current email or session token to load");
-        return;
-    }
-    
-    console.log("📧 Loading emails for:", currentEmail);
-
-    // ✅ PREVENT MULTIPLE SIMULTANEOUS REQUESTS
-    if (window.emailLoadingInProgress) {
-        console.log("🛑 Email load already in progress, skipping");
-        return;
-    }
-    window.emailLoadingInProgress = true;
-    
-    const loader = document.getElementById('inbox-loader');
-    const list = document.getElementById('email-list');
-    const defaultMsg = document.getElementById('no-emails-default');
-    
-    loader.style.display = 'flex';
-    defaultMsg.style.display = 'none';
-    list.innerHTML = '';
-    
-    // Use AbortController to prevent multiple simultaneous requests
-    if (window.emailFetchController) {
-        window.emailFetchController.abort();
-    }
-    window.emailFetchController = new AbortController();
-    
-    fetch(`${API_URL}/api/emails/${encodeURIComponent(currentEmail)}`, {
-        headers: {
-            'X-Session-Token': sessionToken,
-            'Content-Type': 'application/json'
-        },
-        signal: window.emailFetchController.signal
-    })
-    .then(res => {
-        if (!res.ok) {
-            if (res.status === 404) {
-                return { emails: [] };
-            }
-            if (res.status === 403) {
-                // Check if it's an access code revocation
-                return res.json().then(errorData => {
-                    if (errorData.error && errorData.error.includes("Access code has been revoked")) {
-                        throw new Error("ACCESS_CODE_REVOKED");
-                    }
-                    throw new Error("SESSION_EXPIRED");
-                });
-            }
-            throw new Error(`Failed to fetch emails: ${res.status}`);
-        }
-        return res.json();
-    })
-    .then(data => {
-        console.log("✅ Emails loaded:", data.emails?.length || 0);
-        
-        const newCount = data.emails ? data.emails.length : 0;
-        document.getElementById('email-count').textContent = `${newCount} email${newCount !== 1 ? 's' : ''}`;
-        if (isAccessMode) {
-            document.getElementById('access-inbox-count').textContent = `${newCount} email${newCount !== 1 ? 's' : ''}`;
-        }
-
-        document.title = newCount > 0 ? `(${newCount}) TempMail - AMMZ` : 'TempMail - AMMZ';
-        
-        // Show new email notification
-        if (newCount > lastEmailCount && lastEmailCount > 0) {
-            showNotification(`${newCount - lastEmailCount} new email(s) received!`, 'success');
-        }
-        lastEmailCount = newCount;
-        
-        list.innerHTML = '';
-        
-        if (newCount === 0) {
-            if (isAccessMode) {
-                list.innerHTML = `
-                    <div class="text-center py-8 text-gray-300 h-full flex flex-col justify-center">
-                        <i class="fas fa-envelope-open text-3xl mb-3 opacity-60"></i>
-                        <p class="text-base font-medium">No new emails yet</p>
-                        <p class="text-sm mt-1 text-gray-400">Waiting for messages after ${formatTime(accessStartTime)}</p>
-                        <p class="text-xs mt-2 text-blue-400">Access code mode: Only showing emails received after access started</p>
-                    </div>
-                `;
-            } else {
-                list.innerHTML = `
-                    <div class="text-center py-8 text-gray-300 h-full flex flex-col justify-center">
-                        <i class="fas fa-envelope-open text-3xl mb-3 opacity-60"></i>
-                        <p class="text-base font-medium">No emails yet</p>
-                        <p class="text-sm mt-1 text-gray-400">Waiting for messages...</p>
-                    </div>
-                `;
-            }
-        } else {
-            // Render email list
-            data.emails.forEach((email, index) => {
-                const emailItem = document.createElement('div');
-                emailItem.className = 'email-list-item bg-gray-800 rounded-lg p-3 md:p-4 border border-gray-700 cursor-pointer transition-all hover:bg-gray-700';
-                emailItem.setAttribute('data-timestamp', email.timestamp || email.received_at);
-                
-                const subject = email.subject || 'No subject';
-                const sender = email.sender || 'Unknown sender';
-                const preview = extractEmailPreview(email.body);
-                const time = formatTime(email.timestamp || email.received_at);
-                
-                emailItem.innerHTML = `
-                    <div class="flex justify-between items-start mb-2">
-                        <div class="font-semibold text-white text-sm md:text-base truncate flex-1 mr-2">${escapeHtml(subject)}</div>
-                        <div class="text-xs text-gray-400 whitespace-nowrap">${time}</div>
-                    </div>
-                    <div class="text-xs text-gray-300 mb-1 truncate">
-                        <strong>From:</strong> ${escapeHtml(sender)}
-                    </div>
-                    <div class="text-xs text-gray-400 email-preview">
-                        ${escapeHtml(preview)}
-                    </div>
-                `;
-                
-                emailItem.addEventListener('click', () => viewEmail(email, emailItem));
-                list.appendChild(emailItem);
-            });
-        }
-    })
-    .catch(err => {
-        if (err.name === 'AbortError') {
-            console.log("Email fetch aborted");
-            return;
-        }
-        
-        console.error("❌ Error loading emails:", err);
-        
-        if (err.message === "SESSION_EXPIRED") {
-            console.log("🔄 Session expired, clearing frontend state");
-            showNotification("Session expired", "error");
-            clearSession();
-        } else if (err.message === "ACCESS_CODE_REVOKED") {
-            console.log("🔐 Access code revoked, ending session");
-            showNotification("Access code has been revoked by admin", "error");
-            clearSession();
-        } else {
-            handleApiError(err, "Failed to load emails");
-        }
-        
-        list.innerHTML = `<div class="text-center py-8 text-gray-300"><i class="fas fa-envelope-open text-3xl mb-3 opacity-60"></i><p class="text-base font-medium">No emails yet</p><p class="text-sm mt-1 text-gray-400">Waiting for messages...</p></div>`;
-    })
-    .finally(() => {
-        loader.style.display = 'none';
-        window.emailFetchController = null;
-        window.emailLoadingInProgress = false;
-    });
-}
-
-
-
-function extractEmailPreview(body) {
-    if (!body) return 'No content';
-    
-    let text = body;
-    
-    // Remove HTML tags
-    text = text.replace(/<[^>]*>/g, '');
-    
-    // Decode common HTML entities and email encoding
-    text = text
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&#8217;/g, "'")
-        .replace(/=3D/g, '=')
-        .replace(/=20/g, ' ')
-        .replace(/=2E/g, '.')
-        .replace(/=\r?\n/g, '');
-    
-    // Remove email headers and technical content
-    const unwantedPatterns = [
-        /@font-face.*/gi,
-        /font-family:.*/gi,
-        /Content-Type:.*/gi,
-        /charset=.*/gi,
-        /MIME-Version:.*/gi,
-        /Content-Transfer-Encoding:.*/gi,
-        /boundary=.*/gi,
-        /Received:.*/gi,
-        /Return-Path:.*/gi,
-        /Message-ID:.*/gi
-    ];
-    
-    unwantedPatterns.forEach(pattern => {
-        text = text.replace(pattern, '');
-    });
-    
-    // Clean up whitespace
-    text = text.replace(/\s+/g, ' ').trim();
-    
-    // Find the first meaningful sentence
-    const sentences = text.split(/[.!?]/).filter(sentence => {
-        const cleanSentence = sentence.trim();
-        return cleanSentence.length > 10 && 
-               !cleanSentence.includes('charset') &&
-               !cleanSentence.includes('utf-8') &&
-               !cleanSentence.includes('Content-Type');
-    });
-    
-    if (sentences.length > 0) {
-        text = sentences[0].trim();
-    }
-    
-    // Limit length
-    if (text.length > 100) {
-        text = text.substring(0, 100) + '...';
-    }
-    
-    return text || 'No readable content';
-}
-
-function loadDomains() {
-    return fetch(API_URL + '/api/domains')
-    .then(res => {
-        if (!res.ok) {
-            throw new Error('Failed to load domains');
-        }
-        return res.json();
-    })
-    .then(data => {
-        const select = document.getElementById('domain-select');
-        select.innerHTML = '<option value="">Select domain</option>';
-        if (data.domains && data.domains.length > 0) {
-            data.domains.forEach(function(d) {
-                select.innerHTML += '<option value="' + d + '">' + d + '</option>';
-            });
-        } else {
-            // Fallback domain
-            select.innerHTML += '<option value="aungmyomyatzaw.online">aungmyomyatzaw.online</option>';
-        }
-        domainsLoaded = true;
-    })
-    .catch(err => {
-        console.error('Error loading domains:', err);
-        // Set default domain if API fails
-        const select = document.getElementById('domain-select');
-        select.innerHTML = '<option value="">Select domain</option>';
-        select.innerHTML += '<option value="aungmyomyatzaw.online">aungmyomyatzaw.online</option>';
-        domainsLoaded = true;
-    });
-}
-
-function createEmail(customName) {
-    const deviceId = getOrCreateDeviceId();
-    console.log('📱 Using Device ID for creation:', deviceId);
-    
-    const btn = document.getElementById('create-btn');
-    const username = customName || document.getElementById('username-input').value.trim();
-    
-    if (!username) {
-        showNotification('❌ Please enter a username', 'error');
-        return;
-    }
-    
-    // 🚨 IMMEDIATELY show loading state
-    const originalText = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Creating...';
-    btn.classList.add('opacity-50', 'cursor-not-allowed');
-    
-    // ✅ END CURRENT SESSION before creating new one
-    endCurrentSessionForNewEmail().then(() => {
-        // After ending current session, create new email with device_id
-        continueEmailCreation(customName, btn, deviceId);
-    }).catch(err => {
-        console.error('Error ending session:', err);
-        // Still try to create new email even if ending fails
-        continueEmailCreation(customName, btn, deviceId);
-    });
-}
-
-function continueEmailCreation(customName, btn ,deviceId) {
-    // Immediate UI feedback
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Creating...';
-    btn.classList.add('opacity-50', 'cursor-not-allowed');
-    
-    // Clear any previous error states
-    document.getElementById('username-input').classList.remove('border-red-500');
-    
-    // If customName is provided (from random button), use it
-    let username = customName;
-    if (!username) {
-        username = document.getElementById('username-input').value.trim();
-    }
-    
-    // If no username provided, show error and reset button
-    if (!username) {
-        showNotification('❌ Please enter a username', 'error');
-        document.getElementById('username-input').focus();
-        resetButtonState();
-        return;
-    }
-    
-    // Validate username format
-    if (!/^[a-zA-Z0-9-_]+$/.test(username)) {
-        showNotification('❌ Username can only contain letters, numbers, hyphens, and underscores', 'error');
-        document.getElementById('username-input').classList.add('border-red-500');
-        document.getElementById('username-input').focus();
-        resetButtonState();
-        return;
-    }
-    
-    // Get domain
-    let domain = document.getElementById('domain-select').value;
-    if (!domain) {
-        const domainSelect = document.getElementById('domain-select');
-        const availableDomains = Array.from(domainSelect.options)
-            .filter(option => option.value && option.value !== '')
-            .map(option => option.value);
-        
-        if (availableDomains.length > 0) {
-            domain = availableDomains[0];
-            domainSelect.value = domain;
-        } else {
-            domain = 'aungmyomyatzaw.online';
-        }
-    }
-    
-    // Prepare request data
-    const requestData = {
-        name: username,
-        sessionId: sessionId,
-        admin_mode: isAdminMode,
-        device_id: deviceId
-    };
-    
-    if (sessionToken && !isAccessMode) {
-        requestData.current_session_token = sessionToken;
-    }
-
-    
-    
-    // Make API request
-    fetch(API_URL + '/api/create', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-Session-ID': sessionId,
-            'X-Security-Key': emailSecurityKey
-        },
-        body: JSON.stringify(requestData)
-    })
-    .then(async (res) => {
-        const contentType = res.headers.get('content-type');
-        let data;
-        
-        if (contentType && contentType.includes('application/json')) {
-            data = await res.json();
-        } else {
-            const text = await res.text();
-            throw new Error(text || `HTTP ${res.status}`);
-        }
-        
-        if (!res.ok) {
-            data.httpStatus = res.status;
-            throw data;
-        }
-        
-        return data;
-    })
-    .then(data => {
-        if (!data.email) {
-            throw new Error('No email returned from server');
-        }
-        
-        // Success - update session
-        currentEmail = data.email;
-        sessionToken = data.session_token;
-        sessionStartTime = Date.now();
-
-        console.log('✅ Email created with device tracking:', data.device_tracked);
-        
-        // Update UI
-        const parts = currentEmail.split('@');
-        document.getElementById('username-input').value = parts[0];
-        document.getElementById('domain-select').value = parts[1];
-        document.getElementById('current-email').textContent = data.email;
-        document.getElementById('email-display').classList.remove('hidden');
-        document.getElementById('end-session-btn').classList.remove('hidden');
-
-        // Reset email view
-        document.getElementById('desktop-email-placeholder').style.display = 'flex';
-        document.getElementById('desktop-email-content-inner').classList.add('hidden');
-        
-        if (data.existing_session) {
-            showNotification('✅ Session restored: ' + data.email, 'success');
-            console.log('🔄 Existing session reused for:', data.email);
-        } else {
-            showNotification('✅ Email created: ' + data.email, 'success');
-            console.log('🆕 New session created for:', data.email);
-        }
-        
-        // Save session and start timers
-        saveSession();
-        
-        // Load emails after a short delay
-        setTimeout(() => {
-            loadEmails();
-        }, 1000);
-        
-        startAutoRefresh();
-        startTimeUpdate();
-        setupSessionExpiration();
-    })
-    .catch(err => {
-        console.error('Error creating email:', err);
-        
-        // ✅ CHECK FOR DEVICE BAN ERROR - Multiple conditions
-        if (err.message && (
-            err.message.includes('device has been banned') ||
-            err.message.includes('ACCESS_DENIED_DEVICE_BANNED') ||
-            err.code === 'ACCESS_DENIED_DEVICE_BANNED' ||
-            err.error?.includes('device has been banned')
-        )) {
-            console.log('🚫 Device ban detected, showing ban screen');
-            showBannedScreen(err.message || 'Your device has been permanently banned due to policy violations.');
-            return;  // Stop execution
-        }
-        
-        handleCreateError(err);
-    })
-    .finally(() => {
-        resetButtonState();
-    });
-}
-
-function resetButtonState() {
-    const createBtn = document.getElementById('create-btn');
-    const randomBtn = document.getElementById('big-random-btn');
-    
-    createBtn.disabled = false;
-    createBtn.innerHTML = '<i class="fas fa-plus mr-2"></i>Create Mail';
-    createBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-    
-    randomBtn.disabled = false;
-    randomBtn.innerHTML = '<i class="fas fa-random mr-2 md:mr-3 text-lg md:text-xl"></i>Generate Random Email';
-    randomBtn.classList.remove('opacity-50', 'cursor-not-allowed', 'btn-loading');
-}
-
-// Enhanced error handling for email creation
-function handleCreateError(err) {
-        if (err.code === 'ACCESS_DENIED_DEVICE_BANNED' || 
-        err.message?.includes('device has been banned')) {
-        showBannedScreen();
-        return;
-    }
-
-    if (err.httpStatus === 409 || err.code === 'EMAIL_IN_USE_ACTIVE') {
-        resetUIAfterConflict();
-        
-        showModal(
-            'Email Currently in Use', 
-            err.error || 'This email address is currently in use by another session. Please choose a different username or try again later.',
-            function() {
-                document.getElementById('username-input').focus();
-                document.getElementById('username-input').select();
-            }
-        );
-    } else if (err.code === 'USERNAME_BLACKLISTED') {
-        showNotification('🚫 ' + err.error, 'error');
-        document.getElementById('username-input').value = '';
-        document.getElementById('username-input').classList.add('border-red-500');
-        document.getElementById('username-input').focus();
-        
-        showModal(
-            'Reserved Username',
-            'This username is reserved for the system owner. Please choose a different username.',
-            function() {
-                document.getElementById('username-input').focus();
-            }
-        );
-    } else if (err.code === 'INVALID_USERNAME') {
-        showNotification('❌ ' + err.error, 'error');
-        document.getElementById('username-input').classList.add('border-red-500');
-        document.getElementById('username-input').focus();
-    } else {
-        handleApiError(err, 'Failed to create email');
-    }
-}
-
-// 🆕 NEW FUNCTION: Reset UI when session creation fails
-function resetUIAfterConflict() {
-    console.log('🔄 Resetting UI after conflict error');
-    
-    // Clear session state
-    currentEmail = '';
-    sessionToken = '';
-    sessionStartTime = null;
-    
-    // Clear localStorage session
-    localStorage.removeItem('tempMailSession');
-    
-    // Clear UI elements that show session state
-    document.getElementById('email-display').classList.add('hidden');
-    document.getElementById('end-session-btn').classList.add('hidden');
-    document.getElementById('email-count').textContent = '0 emails';
-    document.getElementById('current-email').textContent = '';
-    
-    // Clear any existing emails from display
-    document.getElementById('email-list').innerHTML = '';
-    document.getElementById('no-emails-default').style.display = 'flex';
-    
-    // Reset email content views
-    document.getElementById('desktop-email-placeholder').style.display = 'flex';
-    document.getElementById('desktop-email-content-inner').classList.add('hidden');
-    
-    // Show email list view (in case we were in email view)
-    document.getElementById('email-list-view').classList.remove('hidden');
-    document.getElementById('email-content-view').classList.add('hidden');
-    document.getElementById('header-title').textContent = 'Inbox';
-    document.getElementById('back-to-list').classList.add('hidden');
-    
-    // Stop any auto-refresh that might have been started
-    if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-        autoRefreshInterval = null;
-        console.log('✅ Auto-refresh stopped after conflict');
-    }
-    if (timeUpdateInterval) {
-        clearInterval(timeUpdateInterval);
-        timeUpdateInterval = null;
-        console.log('✅ Time updates stopped after conflict');
-    }
-    
-    // Clear session expiration timeout
-    if (window.sessionExpirationTimeout) {
-        clearTimeout(window.sessionExpirationTimeout);
-        window.sessionExpirationTimeout = null;
-        console.log('✅ Session expiration timer stopped after conflict');
-    }
-    
-    // Reset page title
-    document.title = 'TempMail - AMMZ';
-    
-    console.log('✅ UI reset complete after conflict');
-}
-
-// Fallback function to create email locally if API fails
-function createEmailLocally(customName) {
-    const domain = document.getElementById('domain-select').value || 'aungmyomyatzaw.online';
-    const username = customName || generateRandomUsername();
-    currentEmail = username + '@' + domain;
-    sessionStartTime = Date.now();
-    
-    document.getElementById('username-input').value = username;
-    document.getElementById('domain-select').value = domain;
-    document.getElementById('current-email').textContent = currentEmail;
-    document.getElementById('email-display').classList.remove('hidden');
-    document.getElementById('end-session-btn').classList.remove('hidden');
-    
-    showNotification('✅ Email created locally: ' + currentEmail, 'success');
-    
-    // Save session and start timers
-    saveSession();
-    
-    // Try to load emails anyway (might work if email exists on server)
-    loadEmails();
-    startAutoRefresh();
-    startTimeUpdate();
-    setupSessionExpiration();
-}
-
-function generateRandomUsername() {
-    const firstNames = [
-        'james', 'john', 'robert', 'michael', 'william', 'david', 'richard', 'joseph', 'thomas', 'charles',
-        'christopher', 'daniel', 'matthew', 'anthony', 'mark', 'donald', 'steven', 'paul', 'andrew', 'joshua',
-        'kenneth', 'kevin', 'brian', 'george', 'timothy', 'ronald', 'edward', 'jason', 'jeffrey', 'ryan',
-        'jacob', 'gary', 'nicholas', 'eric', 'jonathan', 'stephen', 'larry', 'justin', 'scott', 'brandon',
-        'benjamin', 'samuel', 'gregory', 'alexander', 'frank', 'patrick', 'raymond', 'jack', 'dennis', 'jerry',
-        'liam', 'noah', 'oliver', 'elijah', 'logan', 'mason', 'lucas', 'ethan', 'levi', 'sebastian',
-        'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan', 'jessica', 'sarah', 'karen',
-        'nancy', 'lisa', 'margaret', 'betty', 'sandra', 'ashley', 'dorothy', 'kimberly', 'emily', 'donna',
-        'michelle', 'carol', 'amanda', 'melissa', 'deborah', 'stephanie', 'rebecca', 'laura', 'sharon', 'cynthia',
-        'kathleen', 'amy', 'angela', 'shirley', 'anna', 'brenda', 'pamela', 'emma', 'nicole', 'helen',
-        'samantha', 'katherine', 'christine', 'debra', 'rachel', 'carolyn', 'janet', 'ruth', 'maria', 'heather',
-        'olivia', 'ava', 'isabella', 'sophia', 'charlotte', 'mia', 'amelia', 'harper', 'evelyn', 'abigail'
-    ];
-    
-    const lastNames = [
-        'smith', 'johnson', 'williams', 'brown', 'jones', 'garcia', 'miller', 'davis', 'rodriguez', 'martinez',
-        'hernandez', 'lopez', 'gonzalez', 'wilson', 'anderson', 'thomas', 'taylor', 'moore', 'jackson', 'martin',
-        'lee', 'perez', 'thompson', 'white', 'harris', 'sanchez', 'clark', 'ramirez', 'lewis', 'robinson',
-        'walker', 'young', 'allen', 'king', 'wright', 'scott', 'torres', 'nguyen', 'hill', 'flores',
-        'green', 'adams', 'nelson', 'baker', 'hall', 'rivera', 'campbell', 'mitchell', 'carter', 'roberts'
-    ];
-    
-    const patterns = [
-        // Pattern 1: FirstName + LastName + Digits (1-3)
-        () => {
-            const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
-            const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
-            const digitLength = Math.floor(Math.random() * 3) + 1;
-            let digits = '';
-            
-            if (digitLength === 1) digits = Math.floor(Math.random() * 10);
-            else if (digitLength === 2) digits = Math.floor(10 + Math.random() * 90);
-            else digits = Math.floor(100 + Math.random() * 900);
-            
-            return `${firstName}${lastName}${digits}`;
-        },
-        
-        // Pattern 2: FirstName + Random word + Digits
-        () => {
-            const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
-            const randomWords = ['star', 'moon', 'sun', 'sky', 'tech', 'web', 'net', 'cloud', 'data', 'code'];
-            const randomWord = randomWords[Math.floor(Math.random() * randomWords.length)];
-            const digits = Math.floor(Math.random() * 1000);
-            return `${firstName}${randomWord}${digits}`;
-        },
-        
-        // Pattern 3: Two first names combined
-        () => {
-            const name1 = firstNames[Math.floor(Math.random() * firstNames.length)];
-            const name2 = firstNames[Math.floor(Math.random() * firstNames.length)];
-            const digits = Math.floor(Math.random() * 100);
-            return `${name1}${name2}${digits}`;
-        },
-        
-        // Pattern 4: Simple first name + 3-4 digits
-        () => {
-            const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
-            const digits = Math.floor(100 + Math.random() * 9000); // 100-9999
-            return `${firstName}${digits}`;
-        }
-    ];
-    
-    // Randomly select a pattern
-    const pattern = patterns[Math.floor(Math.random() * patterns.length)];
-    return pattern();
-}
-
-// Handle window resize
-window.addEventListener('resize', function() {
-    if (window.innerWidth >= 768) {
-        // On desktop, ensure list view is visible
-        document.getElementById('email-list-view').classList.remove('hidden');
-    }
-});
-
-function updateLastEmailTime() {
-    const savedSession = localStorage.getItem('tempMailSession');
-    if (savedSession && currentEmail) {
-        try {
-            const session = JSON.parse(savedSession);
-            session.lastEmailTime = Date.now();
-            localStorage.setItem('tempMailSession', JSON.stringify(session));
-        } catch (e) {
-            console.error('Error updating last email time:', e);
-        }
-    }
-}
-
-// Update email times automatically
-function updateEmailTimes() {
-    const emailItems = document.querySelectorAll('.email-list-item');
-    emailItems.forEach(item => {
-        const timestamp = item.getAttribute('data-timestamp');
-        const timeElement = item.querySelector('.email-time');
-        if (timeElement && timestamp) {
-            timeElement.textContent = formatTime(timestamp);
-        }
-    });
-    
-    // Also update the time in email content if an email is open
-    const emailDateElement = document.getElementById('email-date');
-    if (emailDateElement && emailDateElement.getAttribute('data-timestamp')) {
-        emailDateElement.textContent = formatTime(emailDateElement.getAttribute('data-timestamp'));
-    }
-}
-
-function showAccessModal() {
-    console.log('📭 Showing access modal...');
-    
-    const modal = document.getElementById('access-modal');
-    if (!modal) {
-        console.error('❌ Access modal not found!');
-        return;
-    }
-    
-    window.accessModalOpening = false;
-
-    // Reset modal state
-    const resultDiv = document.getElementById('access-modal-result');
-    const codeInput = document.getElementById('access-code-input-modal');
-    
-    if (resultDiv) {
-        resultDiv.classList.add('hidden');
-        resultDiv.innerHTML = '';
-    }
-    
-    if (codeInput) {
-        codeInput.value = '';
-        codeInput.focus();
-    }
-    
-    // Show modal
-    modal.classList.remove('hidden');
-    console.log('✅ Access modal opened');
-}
-
-function showAccessModalResult(message, type) {
-    const resultDiv = document.getElementById('access-modal-result');
-    if (!resultDiv) return;
-    
-    const bgColor = type === 'success' ? 'bg-green-600' : 'bg-red-600';
-    
-    resultDiv.innerHTML = message;
-    resultDiv.className = `text-center mb-4 p-3 rounded-lg text-white font-medium ${bgColor}`;
-    resultDiv.classList.remove('hidden');
-}
-
-// Local Storage Management for Access Codes
-const ACCESS_CODES_STORAGE_KEY = 'tempMailAccessCodes';
-
-function saveAccessCodeToLocalStorage(codeData) {
-    try {
-        const storedCodes = getAccessCodesFromLocalStorage();
-        
-        // Remove any existing code for the same email to prevent duplicates
-        const filteredCodes = storedCodes.filter(c => c.email !== codeData.email);
-        
-        // Add new code
-        filteredCodes.push({
-            code: codeData.code,
-            email: codeData.email,
-            session_token: codeData.session_token,
-            access_start_time: codeData.access_start_time,
-            expires_at: codeData.expires_at,
-            description: codeData.description || '',
-            device_id: generateDeviceId(),
-            created_at: new Date().toISOString()
-        });
-        
-        localStorage.setItem(ACCESS_CODES_STORAGE_KEY, JSON.stringify(filteredCodes));
-        console.log('💾 Access code saved to localStorage:', codeData.email);
-    } catch (e) {
-        console.error('Error saving access code to localStorage:', e);
-    }
-}
-
-function getAccessCodesFromLocalStorage() {
-    try {
-        const stored = localStorage.getItem(ACCESS_CODES_STORAGE_KEY);
-        return stored ? JSON.parse(stored) : [];
-    } catch (e) {
-        console.error('Error reading access codes from localStorage:', e);
-        return [];
-    }
-}
-
-function getActiveAccessCodeForEmail(email) {
-    const storedCodes = getAccessCodesFromLocalStorage();
-    const currentDeviceId = generateDeviceId();
-    const now = new Date();
-    
-    return storedCodes.find(code => {
-        return code.email === email && 
-               code.device_id === currentDeviceId &&
-               new Date(code.expires_at) > now;
-    });
-}
-
-function removeAccessCodeFromLocalStorage(email) {
-    try {
-        const storedCodes = getAccessCodesFromLocalStorage();
-        const filteredCodes = storedCodes.filter(c => c.email !== email);
-        localStorage.setItem(ACCESS_CODES_STORAGE_KEY, JSON.stringify(filteredCodes));
-        console.log('🗑️ Access code removed from localStorage:', email);
-    } catch (e) {
-        console.error('Error removing access code from localStorage:', e);
-    }
-}
-
-function generateDeviceId() {
-    let deviceId = localStorage.getItem('tempMailDeviceId');
-    if (!deviceId) {
-        deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-        localStorage.setItem('tempMailDeviceId', deviceId);
-    }
-    return deviceId;
-}
-
-function leaveAccessMode() {
-    console.log('🚪 Leaving access mode - switching to clean normal mode');
-    
-    showModal(
-        'Leave Access Mode',
-        'Switch to normal interface?<br><br><strong>Your access session will be saved.</strong> You can return anytime via the Access button.',
-        function() {
-            // ✅ Switch to normal mode but keep access session data
-            isAccessMode = false;
-
-             window.accessModalOpening = false;
-            
-            // Stop access mode timers
-            if (window.accessCodeTimer) {
-                clearInterval(window.accessCodeTimer);
-                window.accessCodeTimer = null;
-            }
-            
-            // Stop email refresh for access mode
-            clearSessionIntervals();
-            
-            // Clear the current session from UI (but keep in localStorage)
-            currentEmail = '';
-            sessionToken = '';
-            sessionStartTime = null;
-            
-            // ✅ FORCE SHOW EMAIL LIST VIEW (not email content view)
-            showEmailList();
-
-            // ✅ REMOVE ACCESS MODE COLOR  
-            document.body.classList.remove('access-mode-active');
-            
-            // Hide access mode UI, show normal mode UI
-            document.getElementById('access-mode-display').classList.add('hidden');
-            document.getElementById('mail-creation-section').classList.remove('hidden');
-            document.getElementById('mail-controls-section').classList.remove('hidden');
-            
-            // Reset email display to fresh state
-            document.getElementById('email-display').classList.add('hidden');
-            document.getElementById('end-session-btn').classList.add('hidden');
-            document.getElementById('current-email').textContent = '';
-            document.getElementById('email-count').textContent = '0 emails';
-            document.getElementById('email-list').innerHTML = '';
-            document.getElementById('no-emails-default').style.display = 'flex';
-            
-            // Reset email content view
-            document.getElementById('desktop-email-placeholder').style.display = 'flex';
-            document.getElementById('desktop-email-content-inner').classList.add('hidden');
-            
-            // ✅ REMOVE ACCESS MODE STYLES
-            document.body.style.background = '';
-            document.querySelector('main').style.background = '';
-            
-            // Reset page title
-            document.title = 'TempMail - AMMZ';
-            
-            showNotification('✅ Switched to normal mode - Ready for new email', 'success');
-            
-            console.log('✅ Clean normal mode ready for new session');
-        }
-    );
-}
-
-function viewEmail(email, itemEl) {
-    // Set active state on the clicked email item
-    document.querySelectorAll('.email-list-item').forEach(el => {
-        el.classList.remove('active', 'bg-blue-600', 'border-blue-500');
-    });
-    itemEl.classList.add('active', 'bg-blue-600', 'border-blue-500');
-    
-    // MOBILE: Switch to email content view
-    if (window.innerWidth < 768) {
-        showEmailContent();
-        displayEmailInIframe(email, 'email');
-    } 
-    // DESKTOP: Update right panel
-    else {
-        document.getElementById('desktop-email-placeholder').style.display = 'none';
-        document.getElementById('desktop-email-content-inner').classList.remove('hidden');
-        displayEmailInIframe(email, 'desktop-email');
-    }
-}
-
-function displayEmailInIframe(email, prefix) {
-    const iframe = document.getElementById(`${prefix}-iframe`);
-    const fallback = document.getElementById(`${prefix}-fallback`);
-    
-    // Set email metadata
-    document.getElementById(`${prefix}-subject`).textContent = email.subject || 'No subject';
-    document.getElementById(`${prefix}-from`).textContent = email.sender || 'Unknown';
-    document.getElementById(`${prefix}-date`).textContent = formatTime(email.timestamp);
-    
-    // ✅ ALWAYS USE FALLBACK DIV - NEVER USE IFRAME
-    iframe.classList.add('hidden');
-    fallback.classList.remove('hidden');
-    
-    // Use the raw body content directly
-    fallback.innerHTML = email.body || '<p class="text-gray-400 text-center py-8">No content available</p>';
-    
-    // Add click handlers for verification codes only
-    setTimeout(() => {
-        const verificationCodes = fallback.querySelectorAll('.bg-yellow-200, [class*="verification"], [class*="code"]');
-        verificationCodes.forEach(codeElement => {
-            const code = codeElement.textContent.trim();
-            if (code && code.length >= 4 && code.length <= 8 && /^\d+$/.test(code)) {
-                codeElement.style.cursor = 'pointer';
-                codeElement.addEventListener('click', function() {
-                    copyToClipboard(code);
-                });
-            }
-        });
-        
-        // Make all links open in new tab
-        const links = fallback.querySelectorAll('a');
-        links.forEach(link => {
-            link.setAttribute('target', '_blank');
-            link.setAttribute('rel', 'noopener noreferrer');
-        });
-    }, 100);
-}
-
-
-
-function prepareEmailForIframe(rawBody) {
-    if (!rawBody || rawBody.trim() === '') {
         return {
-            isHtml: false,
-            content: '<p class="text-gray-400 text-center py-8">No content available</p>'
-        };
-    }
-    
-    const isHtml = /<[a-z][\s\S]*>/i.test(rawBody);
-    
-    // FIXED: Remove the illegal return and fix logic
-    if (isHtml) {
-        // Return raw HTML content
-        return { 
-            isHtml: false, 
-            content: rawBody 
-        };
-    } else {
-        const formattedText = formatPlainTextEmail(rawBody);
-        return { 
-            isHtml: false, 
-            content: formattedText 
-        };
-    }
-}
-
-// Make sure this function exists
-function formatPlainTextEmail(text) {
-    if (!text) return '<p class="text-gray-400">No content</p>';
-    
-    let formatted = escapeHtml(text)
-        .replace(/\n/g, '<br>')
-        .replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" class="text-blue-400 hover:underline">$1</a>');
-    
-    return `<div class="text-gray-200 leading-relaxed">${formatted}</div>`;
-}
-
-function showEmailContent() {
-    document.getElementById('email-list-view').classList.add('hidden');
-    document.getElementById('email-content-view').classList.remove('hidden');
-    document.getElementById('header-title').textContent = 'Email';
-    document.getElementById('back-to-list').classList.remove('hidden');
-}
-
-function showEmailList() {
-    document.getElementById('email-list-view').classList.remove('hidden');
-    document.getElementById('email-content-view').classList.add('hidden');
-    document.getElementById('header-title').textContent = 'Inbox';
-    document.getElementById('back-to-list').classList.add('hidden');
-    
-    // Also for desktop
-    document.getElementById('desktop-email-placeholder').style.display = 'flex';
-    document.getElementById('desktop-email-content-inner').classList.add('hidden');
-}
-
-function startAutoRefresh() {
-    if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-        autoRefreshInterval = null;
-    }
-    
-    autoRefreshInterval = setInterval(() => {
-        // Double-check we still have a valid session before refreshing
-        if (currentEmail && sessionToken) {
-            loadEmails();
-        } else {
-            // Session ended, stop refreshing
-            console.log('🛑 Auto-refresh stopped: no active session');
-            clearInterval(autoRefreshInterval);
-            autoRefreshInterval = null;
+            'subject': msg.get('subject', 'No subject'),
+            'from_email': clean_sender_address(msg.get('from', 'Unknown')),
+            'to': msg.get('to', 'Unknown'),
+            'date': msg.get('date', ''),
+            'body_plain': body_content or 'No content',
+            'body_html': '',
+            'verification_codes': extract_verification_codes(body_content or ''),
+            'attachments': 0
         }
-    }, 5000);
-}
-
-function startTimeUpdate() {
-    if (timeUpdateInterval) {
-        clearInterval(timeUpdateInterval);
-        timeUpdateInterval = null;
-    }
-    
-    timeUpdateInterval = setInterval(() => {
-        // Double-check we still have a valid session
-        if (currentEmail && sessionToken) {
-            updateEmailTimes();
-        } else {
-            // Session ended, stop time updates
-            console.log('🛑 Time updates stopped: no active session');
-            clearInterval(timeUpdateInterval);
-            timeUpdateInterval = null;
+    except Exception as e:
+        logger.error(f"❌ Fallback parsing failed: {e}")
+        return {
+            'subject': 'Failed to parse email',
+            'from_email': 'Unknown',
+            'to': 'Unknown', 
+            'date': '',
+            'body_plain': 'This email could not be parsed properly.',
+            'body_html': '',
+            'verification_codes': [],
+            'attachments': 0
         }
-    }, 1000);
-}
 
+def clean_sender_address(sender):
+    """Clean sender address from common formats"""
+    if not sender:
+        return 'Unknown'
+    
+    if '<' in sender and '>' in sender:
+        email_match = re.search(r'<([^>]+)>', sender)
+        if email_match:
+            return email_match.group(1)
+    
+    if 'bounce' in sender.lower():
+        if '@' in sender:
+            domain_part = sender.split('@')[1]
+            if 'openai.com' in domain_part or 'mandrillapp.com' in domain_part:
+                return 'ChatGPT'
+            elif 'afraid.org' in domain_part:
+                return 'FreeDNS'
+            else:
+                return 'Notification'
+    
+    return sender.strip()
 
-// Initialize Access Door
-function setupAccessDoor() {
-    // Remove any existing onclick handlers and use event listeners instead
-    const accessDoorBtn = document.getElementById('access-door-btn');
-    if (accessDoorBtn) {
-        accessDoorBtn.onclick = null; // Remove old onclick
-        accessDoorBtn.addEventListener('click', openAccessModal);
-    }
+def get_display_body(parsed_email):
+    """Return the original email content without modifications"""
+    # Use the raw HTML body if available, otherwise use plain text
+    raw_content = parsed_email['body_html'] or parsed_email['body_plain']
     
-    // Access Modal Event Listeners
-    document.getElementById('access-modal-confirm').addEventListener('click', redeemAccessCodeFromModal);
-    document.getElementById('access-modal-cancel').addEventListener('click', closeAccessModal);
-    
-    // Enter key in access code input
-    document.getElementById('access-code-input-modal').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            redeemAccessCodeFromModal();
+    if not raw_content:
+        return {
+            'content': '<p class="text-gray-400">No readable content found</p>',
+            'verification_codes': parsed_email['verification_codes']
         }
-    });
     
-    // Auto-uppercase and clean input
-    document.getElementById('access-code-input-modal').addEventListener('input', function(e) {
-        this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    });
-}
-
-function closeAccessModal() {
-    const modal = document.getElementById('access-modal');
-    const resultDiv = document.getElementById('access-modal-result');
-    
-    window.accessModalOpening = false;
-
-    if (modal) {
-        modal.classList.add('hidden');
-    }
-    if (resultDiv) {
-        resultDiv.classList.add('hidden');
-        resultDiv.innerHTML = '';
-    }
-    
-    // Also clear the input field
-    const codeInput = document.getElementById('access-code-input-modal');
-    if (codeInput) {
-        codeInput.value = '';
-    }
-    
-    console.log('✅ Access modal closed');
-}
-
-function redeemAccessCodeFromModal() {
-    const codeInput = document.getElementById('access-code-input-modal');
-    const resultDiv = document.getElementById('access-modal-result');
-    const confirmBtn = document.getElementById('access-modal-confirm');
-    
-    if (!codeInput || !resultDiv || !confirmBtn) {
-        console.error('Access modal elements not found');
-        return;
-    }
-    
-    const code = codeInput.value.trim().toUpperCase();
-    const deviceId = getOrCreateDeviceId(); 
-    
-    if (!code) {
-        showAccessModalResult('❌ Please enter an access code', 'error');
-        return;
-    }
-    
-    // Show loading state
-    const originalText = confirmBtn.innerHTML;
-    confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Checking...';
-    confirmBtn.disabled = true;
-    
-    // ✅ FIX: Clear any existing session before redeeming new code
-    if (currentEmail && sessionToken) {
-        console.log('🔄 Clearing existing session before redeeming new access code');
-        clearSession();
-    }
-    
-    fetch(API_URL + '/api/access-codes/redeem', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-            code: code,
-            device_id: deviceId
-        })
-    })
-    .then(res => {
-        if (!res.ok) {
-            return res.json().then(errorData => {
-                throw new Error(errorData.error || `HTTP ${res.status}`);
-            });
+    # If it's HTML, return it as-is with minimal wrapper
+    if parsed_email['body_html']:
+        return {
+            'content': f'<div class="email-original">{raw_content}</div>',
+            'verification_codes': parsed_email['verification_codes']
         }
-        return res.json();
-    })
-    .then(data => {
-        if (data.success) {
-            
-            // ✅ Remove any expired session data for this email first
-            removeAccessCodeFromLocalStorage(data.email);
-            
-            // ✅ Save the new access code session
-            saveAccessCodeToLocalStorage(data);
-            
-            showAccessModalResult(`✅ Success! Access granted to: ${data.email}`, 'success');
-            
-            
-            // ✅ Close modal after successful redemption
-            setTimeout(() => {
-                closeAccessModal();
-                activateAccessMode(data);
-            }, 1500);
-            
-        } else {
-            showAccessModalResult(`❌ ${data.error}`, 'error');
-            confirmBtn.innerHTML = originalText;
-            confirmBtn.disabled = false;
+    else:
+        # For plain text, just preserve line breaks
+        formatted_text = escapeHtml(raw_content).replace('\n', '<br>')
+        return {
+            'content': f'<div class="email-original whitespace-pre-wrap font-sans">{formatted_text}</div>',
+            'verification_codes': parsed_email['verification_codes']
         }
-    })
-    .catch(err => {
-        console.error('Error redeeming access code:', err);
 
-        let errorMessage = err.message || 'Network error - please try again';
-        if (err.message.includes('ACCESS_CODE_REVOKED')) {
-            errorMessage = 'This access code has been revoked by admin';
-        } else if (err.message.includes('ACCESS_CODE_EXPIRED')) {
-            errorMessage = 'This access code has expired';
-        } else if (err.message.includes('ACCESS_CODE_USED_UP')) {
-            errorMessage = 'This access code has been used up';
-        } else if (err.message.includes('currently in use')) {
-            errorMessage = 'This email address is currently in use by another session';
-        }else if (err.message.includes('ACCESS_DENIED_DEVICE_BANNED')) {
-            errorMessage = 'Your device has been banned from using this service';
-            showBannedScreen();
-            return // Show banned screen
-        }
+def format_time(timestamp):
+    """Format PAST timestamp for display"""
+    if not timestamp:
+        return 'never'
+    
+    try:
+        if isinstance(timestamp, str):
+            date = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        else:
+            date = timestamp
+            
+        now = datetime.now()
+        diff = now - date
         
-        showAccessModalResult(`❌ ${errorMessage}`, 'error');
-        confirmBtn.innerHTML = originalText;
-        confirmBtn.disabled = false;
-    });
-}
-
-function handleRevokedAccessCode(email) {
-    console.log(`🔐 Handling revoked access code for: ${email}`);
-    
-    // Remove from localStorage
-    removeAccessCodeFromLocalStorage(email);
-    
-    // Clear any active session
-    if (currentEmail === email) {
-        clearSession();
-    }
-    
-    // Show notification
-    showNotification('🔐 Access code has been revoked', 'error');
-}
-
-function activateAccessMode(data) {
-    isAccessMode = true;
-    accessStartTime = new Date(data.access_start_time);
-    currentEmail = data.email;
-    sessionToken = data.session_token;
-    sessionStartTime = Date.now();
-    
-    console.log('🔐 Access mode activated:', currentEmail);
-    
-    // ✅ FIX: Hide modal FIRST
-    closeAccessModal();
-    
-    // Show/hide description section based on data
-    const descriptionSection = document.getElementById('access-description-section');
-    const descriptionText = document.getElementById('access-description-text');
-    
-    if (data.description && data.description.trim() !== '') {
-        descriptionText.textContent = data.description;
-        descriptionSection.classList.remove('hidden');
-    } else {
-        descriptionSection.classList.add('hidden');
-    }
-
-    // ✅ Show only access mode UI, hide normal mode
-    document.getElementById('access-mode-display').classList.remove('hidden');
-    document.getElementById('mail-creation-section').classList.add('hidden');
-    document.getElementById('mail-controls-section').classList.add('hidden');
-    
-    document.getElementById('access-email-display').textContent = currentEmail;
-    document.getElementById('current-email').innerHTML = `
-        ${currentEmail} 
-        <span class="bg-blue-500 text-white px-2 py-1 rounded text-xs ml-2">ACCESS CODE</span>
-    `;
-    document.getElementById('email-display').classList.remove('hidden');
-    document.getElementById('end-session-btn').classList.remove('hidden');
-    
-    // Use the backend expiration time directly
-    const backendExpiresAt = data.expires_at;
-    startAccessCodeTimer(backendExpiresAt);
-    
-    // Save session properly
-    saveSession();
-    
-    loadEmails();
-    startAutoRefresh();
-    startTimeUpdate();
-    setupSessionExpiration();
-    
-    if (data.description) {
-        showNotification(`🔐 ${data.description}`, 'info');
-    }
-}
-
-function startAccessCodeTimer(expiresAt) {
-    const updateTimer = () => {
-        const timeRemaining = getAccessCodeTimeRemaining(expiresAt);
-        document.getElementById('access-expire-time').textContent = timeRemaining;
+        seconds = diff.total_seconds()
+        minutes = seconds // 60
+        hours = minutes // 60
+        days = hours // 24
         
-        if (timeRemaining === 'Expired') {
-            clearInterval(timerInterval);
-        }
-    };
-    
-    updateTimer(); // Run immediately
-    const timerInterval = setInterval(updateTimer, 60000); // Update every minute
-}
-
-// Add this function to your main app JavaScript
-function getTimeRemaining(expiresAt) {
-    const now = new Date();
-    const expires = new Date(expiresAt);
-    const diff = expires - now;
-    
-    if (diff <= 0) return 'Expired';
-    
-    const minutes = Math.floor(diff / (1000 * 60));
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-    
-    if (days > 0) return `${days}d ${hours % 24}h`;
-    if (hours > 0) return `${hours}h ${minutes % 60}m`;
-    return `${minutes}m`;
-}
-
-
-function updateAccessExpiration(expiresAt) {
-    const expireDate = new Date(expiresAt);
-    const updateTimer = () => {
-        const now = new Date();
-        const diff = expireDate - now;
+        if seconds < 60:
+            return 'just now'
+        if minutes < 60:
+            return f'{int(minutes)}m ago'
+        if hours < 24:
+            return f'{int(hours)}h ago'
+        if days < 7:
+            return f'{int(days)}d ago'
         
-        if (diff <= 0) {
-            document.getElementById('access-expire-time').textContent = 'Expired';
-            return;
-        }
+        return date.strftime('%b %d, %H:%M')
         
-        const hours = Math.floor(diff / (1000 * 60 * 60));
-        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-        document.getElementById('access-expire-time').textContent = `${hours}h ${minutes}m`;
-    };
+    except Exception as e:
+        logger.error(f"Time formatting error: {e}")
+        return 'unknown'
+
+def format_future_time(timestamp):
+    """Format FUTURE timestamp for countdown display"""
+    if not timestamp:
+        return 'never'
     
-    updateTimer();
-    setInterval(updateTimer, 60000); // Update every minute
-}
-
-function copyAccessEmail() {
-    const email = document.getElementById('access-email-display').textContent;
-    navigator.clipboard.writeText(email);
-    showNotification('📋 Email copied to clipboard!', 'success');
-}
-
-
-// Clear session intervals (helper function)
-function clearSessionIntervals() {
-    if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-        autoRefreshInterval = null;
-    }
-    if (timeUpdateInterval) {
-        clearInterval(timeUpdateInterval);
-        timeUpdateInterval = null;
-    }
-}
-
-
-function setupAMMZDoor() {
-    const ammzElements = document.querySelectorAll('.text-yellow-300');
-    
-    ammzElements.forEach((el) => {
-        if (el.textContent === 'AMMZ' && el.closest('marquee')) {
-            console.log('✅ Setting up AMMZ door');
-            el.title = 'Click to enter Admin Mode';
-            el.classList.add('hover:underline', 'transition-all', 'duration-200');
-            el.style.cursor = 'pointer';
+    try:
+        if isinstance(timestamp, str):
+            date = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        else:
+            date = timestamp
             
-            // Remove any existing listeners first
-            el.replaceWith(el.cloneNode(true));
-            const newEl = document.querySelector('.text-yellow-300[title="Click to enter Admin Mode"]');
-            
-            // Add click event
-            newEl.addEventListener('click', function(e) {
-                console.log('🎯 AMMZ door clicked!');
-                e.preventDefault();
-                e.stopPropagation();
-                toggleAdminMode();
-            });
-        }
-    });
-}
+        now = datetime.now()
+        diff = date - now
+        
+        if diff.total_seconds() <= 0:
+            return 'Expired'
+        
+        seconds = diff.total_seconds()
+        minutes = seconds // 60
+        hours = minutes // 60
+        days = hours // 24
+        
+        if days > 0:
+            return f'{int(days)}d {int(hours % 24)}h'
+        if hours > 0:
+            return f'{int(hours)}h {int(minutes % 60)}m'
+        if minutes > 0:
+            return f'{int(minutes)}m'
+        return '<1m'
+        
+    except Exception as e:
+        logger.error(f"Future time formatting error: {e}")
+        return 'error'
 
-
-
-function endSession() {
-    console.log('🛑 Ending session...');
+def format_email_content(text, verification_codes):
+    """Format email content for HTML display - preserve original structure"""
+    if not text:
+        return '<p class="text-gray-400">No content</p>'
     
-    // Save current session data for backend call BEFORE clearing
-    const endEmail = currentEmail;
-    const endToken = sessionToken;
-
-    // Clear frontend state immediately
-    currentEmail = '';
-    sessionToken = '';
-    sessionStartTime = null;
+    # Remove only technical headers, keep everything else as-is
+    header_patterns = [
+        'Received:', 'Received-SPF:', 'ARC-Seal:', 'ARC-Message-Signature:',
+        'DKIM-Signature:', 'Authentication-Results:', 'Return-Path:',
+        'Delivered-To:', 'Content-Type:', 'MIME-Version:', 'Message-ID:'
+    ]
     
-    // Clear localStorage
-    localStorage.removeItem('tempMailSession');
+    lines = text.split('\n')
+    clean_lines = []
     
-    // Stop all refresh intervals
-    if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-        autoRefreshInterval = null;
-        console.log('✅ Auto-refresh stopped');
-    }
-    if (timeUpdateInterval) {
-        clearInterval(timeUpdateInterval);
-        timeUpdateInterval = null;
-        console.log('✅ Time update stopped');
-    }
+    for line in lines:
+        # Skip only technical headers
+        if not any(line.startswith(pattern) for pattern in header_patterns):
+            clean_lines.append(line.rstrip())
     
-    // Clear any session expiration timeout
-    if (window.sessionExpirationTimeout) {
-        clearTimeout(window.sessionExpirationTimeout);
-        window.sessionExpirationTimeout = null;
-        console.log('✅ Session expiration timer stopped');
-    }
+    text = '\n'.join(clean_lines)
     
-    // Clear any pending email fetch requests
-    if (window.emailFetchController) {
-        window.emailFetchController.abort();
-        window.emailFetchController = null;
-        console.log('✅ Pending requests cancelled');
-    }
+    # Convert to HTML with minimal changes
+    html_content = escapeHtml(text)
     
-    // Reset UI immediately
-    document.getElementById('username-input').value = '';
-    document.getElementById('domain-select').selectedIndex = 0;
-    document.getElementById('email-display').classList.add('hidden');
-    document.getElementById('end-session-btn').classList.add('hidden');
-    document.getElementById('email-count').textContent = '0 emails';
-    document.getElementById('email-list').innerHTML = '';
-    document.getElementById('no-emails-default').style.display = 'flex';
+    # Remove the "Click to copy verification code" text that appears multiple times
+    html_content = html_content.replace('Click to copy verification code', '')
     
-    // Reset email view
-    document.getElementById('desktop-email-placeholder').style.display = 'flex';
-    document.getElementById('desktop-email-content-inner').classList.add('hidden');
-    
-    // Reset title
-    document.title = 'TempMail - AMMZ';
-    
-    console.log('✅ Frontend session cleared');
-
-    // Notify backend to end session (fire and forget - don't wait for response)
-    if (endEmail && endToken) {
-        console.log('📡 Notifying backend to end session...');
-        fetch(API_URL + '/api/session/end', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                session_token: endToken,
-                email_address: endEmail
-            })
-        })
-        .then(res => {
-            if (!res.ok) {
-                console.log('⚠️ Backend session end failed, but continuing');
-            } else {
-                console.log('✅ Backend session ended');
-            }
-            return res.json();
-        })
-        .then(data => {
-            console.log('✅ Backend confirmed session end');
-        })
-        .catch(err => {
-            console.log('❌ Backend session end error (ignoring):', err);
-        })
-        .finally(() => {
-            // Show success notification WITHOUT reloading the page
-            showNotification('✅ Session ended successfully', 'success');
-            console.log('🎯 Session end process complete - NO PAGE RELOAD');
-        });
-    } else {
-        // No session data, just show success
-        showNotification('✅ Session cleared', 'success');
-        console.log('🎯 Session cleared - NO PAGE RELOAD');
-    }
-}
-
-function toggleAdminMode() {
-    console.log('Toggle admin mode, current:', isAdminMode);
-    
-    if (!isAdminMode) {
-        // Simple approach for now - just show password modal
-        showPasswordModal();
-    } else {
-        // Leaving admin mode
-        fetch('/api/admin/logout', {
-            method: 'POST',
-            credentials: 'include'
-        }).then(() => {
-            deactivateAdminMode();
-        }).catch(() => {
-            deactivateAdminMode();
-        });
-    }
-}
-
-// Add this function
-function clearAdminSessions() {
-    fetch('/api/admin/clear-sessions', {
-        method: 'POST',
-        credentials: 'include'
-    }).catch(err => console.log('Admin sessions cleared'));
-}
-
-function showPasswordModal() {
-    const modal = document.createElement('div');
-    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
-    modal.innerHTML = `
-        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 glass-effect">
-            <div class="text-center mb-6">
-                <i class="fas fa-shield-alt text-3xl text-yellow-400 mb-3"></i>
-                <h3 class="text-xl font-bold text-white mb-2">Admin Access</h3>
-                <p class="text-gray-300">Enter admin password to continue</p>
+    # Highlight verification codes in their original positions with proper styling
+    for code in verification_codes:
+        # Create a beautiful centered verification code button
+        verification_button = f'''
+        <div class="text-center my-8">
+            <div class="bg-gradient-to-r from-yellow-400 to-orange-400 text-white px-8 py-6 rounded-xl font-mono font-bold border-2 border-yellow-500 text-3xl inline-block cursor-pointer hover:from-yellow-500 hover:to-orange-500 transition-all transform hover:scale-105 shadow-lg" onclick="copyToClipboard('{code}')">
+                {code}
             </div>
-            <input type="password" id="admin-password-input" 
-                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white mb-4 focus:outline-none focus:border-yellow-400" 
-                   placeholder="Enter password">
-            <div class="flex gap-3">
-                <button onclick="closePasswordModal()" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-3 rounded-lg transition-colors">
-                    Cancel
-                </button>
-                <button onclick="verifyAdminPassword()" class="flex-1 bg-yellow-500 hover:bg-yellow-600 text-white py-3 rounded-lg transition-colors font-semibold">
-                    Verify
-                </button>
-            </div>
+            <p class="text-sm text-gray-300 mt-3">Click the code above to copy</p>
         </div>
-    `;
-    document.body.appendChild(modal);
-    
-    // Focus input and handle Enter key
-    const input = document.getElementById('admin-password-input');
-    input.focus();
-    input.addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') verifyAdminPassword();
-    });
-}
-
-function closePasswordModal() {
-    const modal = document.querySelector('.fixed.inset-0');
-    if (modal) modal.remove();
-}
-
-async function verifyAdminPassword() {
-    const password = document.getElementById('admin-password-input').value;
-    if (!password) {
-        alert('❌ Please enter a password');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/verify-admin', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            credentials: 'include',
-            body: JSON.stringify({password: password})
-        });
+        '''
         
-        if (response.ok) {
-            const result = await response.json();
-            if (result.success) {
-                closePasswordModal();
-                activateAdminMode();
-            } else {
-                alert('❌ Invalid password');
-            }
-        } else {
-            const error = await response.json();
-            alert('❌ ' + (error.error || 'Verification failed'));
-        }
-    } catch (error) {
-        console.error('Admin login error:', error);
-        alert('❌ Connection error');
-    }
-}
+        # Replace the verification code with our styled version
+        html_content = html_content.replace(
+            f'{code}\nClick to copy verification code', 
+            verification_button
+        )
+        # Also replace standalone codes
+        html_content = html_content.replace(
+            code, 
+            f'<span class="verification-code-highlight">{code}</span>'
+        )
+    
+    # Make URLs clickable
+    html_content = re.sub(
+        r'(https?://[^\s<]+)', 
+        r'<a href="\1" target="_blank" class="text-blue-400 hover:underline break-all">\1</a>', 
+        html_content
+    )
+    
+    # Preserve line breaks and whitespace
+    html_content = html_content.replace('\n', '<br>')
+    
+    # Dark background wrapper
+    return f'<div class="email-content whitespace-pre-wrap text-gray-200 leading-relaxed font-sans bg-gray-900/50 p-6 rounded-lg border border-gray-700">{html_content}</div>'
 
-function activateAdminMode() {
-    isAdminMode = true;
-    
-    // Clear any existing session when entering admin mode
-    clearSession();
-    
-    // Change UI colors
-    document.body.classList.add('admin-mode');
-    document.querySelector('header').classList.add('admin-header');
-    
-    // Fix icon size and text alignment
-    const header = document.querySelector('h1');
-    header.innerHTML = '<i class="fas fa-shield-alt text-xl md:text-3xl mr-2 md:mr-3"></i><span class="text-xl md:text-4xl lg:text-5xl font-bold">ADMIN MODE - TempMail</span>';
-    header.classList.add('admin-text');
-    
-    // Update the subtitle
-    const subtitle = document.querySelector('header p');
-    if (subtitle) {
-        subtitle.innerHTML = '<span class="admin-text">Admin Mode Active - Blacklist Bypass Enabled</span>';
-    }
-    
-    showNotification('🔓 Admin Mode Activated - Session cleared', 'success');
-}
+def escapeHtml(text):
+    if not text:
+        return ''
+    import html
+    return html.escape(text)
 
-function deactivateAdminMode() {
-    isAdminMode = false;
-    
-    // ✅ Use clearSession instead of custom logic to ensure intervals are cleared
-    clearSession();
-    
-    // Force logout from admin backend
-    fetch('/api/admin/logout', {
-        method: 'POST',
-        credentials: 'include'
-    }).catch(err => console.log('Admin logout completed'));
-    
-    // Restore normal UI
-    document.body.classList.remove('admin-mode');
-    const header = document.querySelector('header');
-    if (header) header.classList.remove('admin-header');
-    
-    // Restore original header
-    const h1 = document.querySelector('h1');
-    if (h1) {
-        h1.innerHTML = '<i class="fas fa-envelope text-xl md:text-3xl mr-2 md:mr-3"></i><span class="text-xl md:text-4xl lg:text-5xl font-bold">Secure TempMail By AMMZ</span>';
-        h1.classList.remove('admin-text');
-    }
-    
-    // Restore original subtitle
-    const subtitle = document.querySelector('header p');
-    if (subtitle) {
-        subtitle.textContent = 'Disposable email addresses';
-        subtitle.classList.remove('admin-text');
-    }
-    
-    showNotification('🔓 Admin Mode Deactivated', 'success');
-    
-    // Force page reload after a short delay to ensure clean state
-    setTimeout(() => {
-        window.location.reload();
-    }, 1000);
-}
-
-// Enhanced session validation
-function validateCurrentSession() {
-    if (!currentEmail || !sessionToken) return false;
-    
-    // Check if session is expired
-    if (sessionStartTime) {
-        const sessionAge = Date.now() - sessionStartTime;
-        if (sessionAge > SESSION_TIMEOUT) {
-            console.log('Session expired, clearing...');
-            clearSession();
-            return false;
-        }
-    }
-    
-    return true;
-}
-
-// ✅ START PERIODIC BAN CHECKING
-function startBanMonitoring() {
-    // Check immediately
-    checkDeviceBanStatus();
-    
-    // Then check every 30 seconds
-    banCheckInterval = setInterval(() => {
-        checkDeviceBanStatus();
-    }, 30000);
-}
-
-async function checkDeviceBanStatus() {
-    const deviceId = getOrCreateDeviceId();
-    
-    try {
-        const response = await fetch(`${API_URL}/api/check-device-ban/${deviceId}`, {
-            method: 'GET',
-            credentials: 'include'
-        });
+def validate_session(email_address, session_token):
+    """Validate if session is valid - checks access code status"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
         
-        const data = await response.json();
+        # Check if session exists and is active
+        c.execute('''
+            SELECT session_token, expires_at, is_access_code, is_active
+            FROM sessions 
+            WHERE email_address = %s AND session_token = %s 
+            AND expires_at > NOW() AND is_active = TRUE
+        ''', (email_address, session_token))
         
-        if (data.is_banned) {
-            console.log('🚫 Device ban detected during session');
-            if (banCheckInterval) clearInterval(banCheckInterval);
-            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
-            if (timeUpdateInterval) clearInterval(timeUpdateInterval);
-            showBannedScreen(data.reason);
-        }
-    } catch (err) {
-        console.error('Error checking ban status:', err);
-    }
-}
-
-
-async function initApp() {
-    
-    console.log('🚀 Initializing app...');
-
-    const deviceId = getOrCreateDeviceId();
-    try {
-        const banCheckResponse = await fetch(`${API_URL}/api/check-device-ban/${deviceId}`, {
-            method: 'GET',
-            credentials: 'include'
-        });
+        session_data = c.fetchone()
         
-        const banData = await banCheckResponse.json();
+        if not session_data:
+            logger.warning(f"❌ Session validation failed for {email_address}")
+            return False, "Invalid or expired session"
         
-        if (banData.is_banned) {
-            console.log('🚫 Device is banned on page load');
-            showBannedScreen(banData.reason || 'Your device has been permanently banned due to policy violations.');
-            return; // Stop initialization
-        }
-    } catch (err) {
-        console.error('Error checking ban status:', err);
-    }
-    
-    setupAccessDoor();
-
-    loadDomains().then(() => {
-        console.log('✅ Domains loaded');
+        session_token, expires_at, is_access_code, is_active = session_data
         
-        // ✅ Check for access code sessions FIRST
-        const savedAccessCodes = getAccessCodesFromLocalStorage();
-        const currentDeviceId = generateDeviceId();
-        const now = new Date();
-        
-        const activeAccessSession = savedAccessCodes.find(accessCode => {
-            return accessCode.device_id === currentDeviceId && 
-                   new Date(accessCode.expires_at) > now;
-        });
-        
-        if (activeAccessSession) {
-            console.log('🔐 Active access session found on page load');
-            // Don't auto-restore here - let user click Access button
-        } else {
-            // Try to restore normal session
-            if (!loadSession()) {
-                console.log('ℹ️ No valid session found or restored');
-                clearSession();
-            }
-        }
-    }).catch(err => {
-        console.error('❌ Error loading domains:', err);
-        if (!loadSession()) {
-            clearSession();
-        }
-    });
-    
-    setInterval(validateCurrentSession, 30000);
-    
-    // ✅ START BAN MONITORING
-    startBanMonitoring();
-}
-
-function setupEventListeners() {
-    // Create button
-    document.getElementById('create-btn').addEventListener('click', function() {
-        const btn = this;
-        const username = document.getElementById('username-input').value.trim();
-        
-        if (!username) {
-            showNotification('❌ Please enter a username', 'error');
-            document.getElementById('username-input').focus();
-            return;
-        }
-        
-        // Validate username format
-        if (!/^[a-zA-Z0-9-_]+$/.test(username)) {
-            showNotification('❌ Username can only contain letters, numbers, hyphens, and underscores', 'error');
-            document.getElementById('username-input').classList.add('border-red-500');
-            document.getElementById('username-input').focus();
-            return;
-        }
-        
-        // 🚨 IMMEDIATELY show loading state
-        const originalText = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Creating...';
-        btn.classList.add('opacity-50', 'cursor-not-allowed');
-        
-        // ✅ END CURRENT SESSION before creating new one
-        endCurrentSessionForNewEmail().then(() => {
-            // After ending current session, create new email
-            createEmail(username);
-        }).catch(err => {
-            console.error('Error ending session:', err);
-            // Still try to create new email even if ending fails
-            createEmail(username);
-        });
-    });
-
-    // Enter key in username field - works exactly like Create button
-    document.getElementById('username-input').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            e.preventDefault(); // Prevent form submission
-            const username = document.getElementById('username-input').value.trim();
+        # For access code sessions, check if the access code is still active
+        if is_access_code:
+            c.execute('''
+                SELECT ac.is_active, ac.expires_at, ac.used_count, ac.max_uses
+                FROM access_codes ac
+                WHERE ac.email_address = %s AND ac.code IN (
+                    SELECT SUBSTRING(s.session_token FROM 1 FOR 8) 
+                    FROM sessions s 
+                    WHERE s.session_token = %s AND s.is_access_code = TRUE
+                )
+            ''', (email_address, session_token))
             
-            if (!username) {
-                showNotification('❌ Please enter a username', 'error');
-                document.getElementById('username-input').focus();
-                return;
-            }
-            
-            if (!/^[a-zA-Z0-9-_]+$/.test(username)) {
-                showNotification('❌ Username can only contain letters, numbers, hyphens, and underscores', 'error');
-                document.getElementById('username-input').classList.add('border-red-500');
-                document.getElementById('username-input').focus();
-                return;
-            }
-            
-            createEmail(username);
-        }
-    });
-    
-    // Random email button
-    document.getElementById('big-random-btn').addEventListener('click', function() {
-        const btn = this;
-        console.log('🎲 Random button clicked - checking current session...');
-        
-        // 🚨 IMMEDIATELY show loading state
-        const originalText = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Creating...';
-        btn.classList.add('opacity-50', 'cursor-not-allowed');
-        
-        // If there's an active session, end it first
-        if (currentEmail && sessionToken) {
-            console.log('🔄 Ending current session before creating new one...');
-            
-            endSessionForNewEmail().then(() => {
-                console.log('✅ Current session ended, now creating new email...');
+            access_code_data = c.fetchone()
+            if access_code_data:
+                is_active_code, code_expires_at, used_count, max_uses = access_code_data
                 
-                const randomUsername = generateRandomUsername();
-                document.getElementById('username-input').value = randomUsername;
+                # Check if access code is revoked or expired
+                current_time = datetime.now()
+                if not is_active_code:
+                    logger.info(f"🔐 Access code revoked for session: {email_address}")
+                    c.execute('''
+                        UPDATE sessions 
+                        SET is_active = FALSE 
+                        WHERE session_token = %s
+                    ''', (session_token,))
+                    conn.commit()
+                    conn.close()
+                    return False, "ACCESS_CODE_REVOKED"
                 
-                createEmail(randomUsername);
+                if current_time > code_expires_at:
+                    logger.info(f"🔐 Access code expired for session: {email_address}")
+                    c.execute('''
+                        UPDATE sessions 
+                        SET is_active = FALSE 
+                        WHERE session_token = %s
+                    ''', (session_token,))
+                    conn.commit()
+                    conn.close()
+                    return False, "ACCESS_CODE_EXPIRED"
                 
-            }).catch(err => {
-                console.error('❌ Error ending session:', err);
-                
-                const randomUsername = generateRandomUsername();
-                document.getElementById('username-input').value = randomUsername;
-                
-                createEmail(randomUsername);
+                if used_count >= max_uses:
+                    logger.info(f"🔐 Access code used up for session: {email_address}")
+                    c.execute('''
+                        UPDATE sessions 
+                        SET is_active = FALSE 
+                        WHERE session_token = %s
+                    ''', (session_token,))
+                    conn.commit()
+                    conn.close()
+                    return False, "ACCESS_CODE_USED_UP"
+        
+        # Update last activity for regular sessions only
+        if not is_access_code:
+            try:
+                c.execute('''
+                    UPDATE sessions 
+                    SET last_activity = %s 
+                    WHERE session_token = %s
+                ''', (datetime.now(), session_token))
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"Could not update session activity: {e}")
+        
+        conn.close()
+        logger.info(f"✅ Session validated for {email_address} (access_code: {is_access_code})")
+        return True, "Valid session"
+        
+    except Exception as e:
+        logger.error(f"Session validation error: {e}")
+        return False, str(e)
+    
+@app.before_request
+def before_request():
+    """Set session as permanent before each request"""
+    session.permanent = True
 
-            });
+@app.after_request
+def after_request(response):
+    """Add CORS headers after each request"""
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+@app.route('/')
+def portfolio_home():
+    """Portfolio as main landing page"""
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve portfolio directly
+    if 'localhost' in host:
+        return send_from_directory('static/portfolio', 'index.html')
+    
+    if 'tempmail.' in host:
+        return send_from_directory('static/projects/tempmail', 'index.html')
+    else:
+        return send_from_directory('static/portfolio', 'index.html')
+
+@app.route('/admin')
+def admin_panel():
+    """Admin panel - works for both domains"""
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve admin directly
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'admin.html')
+    
+    if 'tempmail.' in host:
+        return send_from_directory('static/projects/tempmail', 'admin.html')
+    else:
+        # If someone accesses /admin on main domain, redirect to tempmail subdomain
+        return redirect('https://tempmail.aungmyomyatzaw.online/admin')
+
+@app.route('/downloader')
+def downloader_home():
+    """Downloader frontend - only on main domain"""
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: Allow downloader on localhost too
+    if 'localhost' in host or 'tempmail.' not in host:
+        return send_from_directory('static/projects/downloader', 'index.html')
+    
+    # For tempmail subdomain, redirect to main domain downloader
+    return redirect('https://aungmyomyatzaw.online/downloader')
+
+@app.route('/projects/tempmail')
+def tempmail_redirect():
+    """Redirect main domain tempmail access to subdomain"""
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve tempmail directly
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'index.html')
+    
+    return redirect('https://tempmail.aungmyomyatzaw.online')
+
+@app.route('/projects/tempmail/admin')
+def tempmail_admin_redirect():
+    """Redirect main domain tempmail admin to subdomain"""
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve admin directly
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'admin.html')
+    
+    return redirect('https://tempmail.aungmyomyatzaw.online/admin')
+
+# Update your static file serving for tempmail
+@app.route('/projects/tempmail/<path:filename>')
+def tempmail_static(filename):
+    """Serve tempmail static files"""
+    host = request.headers.get('Host', '').lower()
+    
+    # ✅ TEMP FIX: For local testing, serve static files directly
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', filename)
+    
+    if 'tempmail.' in host:
+        return send_from_directory('static/projects/tempmail', filename)
+    else:
+        # If accessed from main domain, redirect to subdomain
+        return redirect(f'https://tempmail.aungmyomyatzaw.online/projects/tempmail/{filename}')
+
+# ✅ ADD THIS NEW ROUTE for local tempmail access
+@app.route('/tempmail')
+def local_tempmail():
+    """Local-only route for tempmail home"""
+    host = request.headers.get('Host', '').lower()
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'index.html')
+    return redirect('https://tempmail.aungmyomyatzaw.online')
+
+# ✅ ADD THIS NEW ROUTE for local admin access
+@app.route('/tempmail/admin')
+def local_admin():
+    """Local-only route for admin panel"""
+    host = request.headers.get('Host', '').lower()
+    if 'localhost' in host:
+        return send_from_directory('static/projects/tempmail', 'admin.html')
+    return redirect('https://tempmail.aungmyomyatzaw.online/admin')
+
+
+
+@app.route('/api/download', methods=['POST'])
+def proxy_to_lambda():
+    """
+    Proxy endpoint that forwards downloader requests to Lambda
+    This HIDES the Lambda URL from frontend code and GitHub
+    """
+    try:
+        if not LAMBDA_API_URL:
+            logger.error("LAMBDA_API_URL not configured")
+            return jsonify({'error': 'Download service not configured'}), 500
+        
+        # Get request data from downloader frontend
+        data = request.get_json()
+        
+        logger.info(f"📥 Proxy request to Lambda: {data}")
+        
+        # Forward request to Lambda (URL is hidden in environment variable!)
+        response = requests.post(
+            LAMBDA_API_URL,
+            json=data,
+            timeout=60  # Render handles longer timeouts than Netlify
+        )
+        
+        logger.info(f"📤 Lambda response status: {response.status_code}")
+        
+        # Return Lambda's response to downloader frontend
+        return response.json(), response.status_code
+        
+    except requests.Timeout:
+        logger.error("Lambda request timeout")
+        return jsonify({'success': False, 'error': 'Request timeout'}), 504
+    except requests.RequestException as e:
+        logger.error(f"Lambda request error: {e}")
+        return jsonify({'success': False, 'error': 'Download service unavailable'}), 503
+    except Exception as e:
+        logger.error(f"Proxy error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
+@app.route('/api/domains', methods=['GET'])
+def get_domains():
+    return jsonify({'domains': [DOMAIN]})
+
+# Enhanced email creation with better conflict handling
+@app.route('/api/create', methods=['POST'])
+def create_email():
+    conn = None
+    try:
+        data = request.get_json() or {}
+        custom_name = data.get('name', '').strip()
+        admin_mode = data.get('admin_mode', False)
+        current_session_token = data.get('current_session_token')
+        device_id = data.get('device_id', '')
+    
+        conn = get_db()
+        c = conn.cursor()
+        
+        # ✅ Check if device is banned
+        if device_id and is_device_banned(device_id):
+            logger.warning(f"🚫 Banned device attempted access: {device_id}")
+            return jsonify({
+                'error': 'Your device has been banned from using this service',  # ✅ THIS TEXT triggers showBannedScreen()
+                'code': 'ACCESS_DENIED_DEVICE_BANNED',
+                'message': 'Your device has been permanently banned due to policy violations.'
+            }), 403
+
+        
+        # Validate security headers
+        session_id = request.headers.get('X-Session-ID')
+        security_key = request.headers.get('X-Security-Key')
+        
+        if not session_id or not security_key:
+            logger.warning("Missing security headers in create request")
+        
+        username = ""
+        
+        if custom_name:
+            username = custom_name.lower()
+            username = ''.join(c for c in username if c.isalnum() or c in '-_')
+            if not username:
+                return jsonify({'error': 'Invalid username', 'code': 'INVALID_USERNAME'}), 400
             
-        } else {
-            console.log('📭 No active session, creating new email directly...');
+            # Check if this is an access code session
+            is_access_code_session = False
+
+            if current_session_token:
+                try:
+                    conn = get_db()
+                    c = conn.cursor()
+                    c.execute('SELECT is_access_code FROM sessions WHERE session_token = %s', (current_session_token,))
+                    session_data = c.fetchone()
+                    conn.close()
+                    if session_data and session_data[0]:
+                        is_access_code_session = True
+                        logger.info(f"⚠️ Access code session detected - bypassing blacklist for: {username}")
+                except Exception as e:
+                    logger.warning(f"Error checking session type: {e}")
+
+            # Skip blacklist check if admin mode OR access code session
+            if not admin_mode and not is_access_code_session and is_username_blacklisted(username):
+                return jsonify({
+                    'error': 'This username is reserved for the system owner. Please choose a different username.',
+                    'code': 'USERNAME_BLACKLISTED'
+                }), 403
+
+        else:
+            # Generate random name
+            male_name = random.choice(MALE_NAMES)
+            female_name = random.choice(FEMALE_NAMES)
+            three_digits = ''.join(random.choices(string.digits, k=3))
+            username = f"{male_name}{female_name}{three_digits}"
+        
+        email_address = f"{username}@{DOMAIN}"
+
+        
+        # Check if email is currently in use by an ACTIVE session
+        c.execute('''
+            SELECT session_token, created_at 
+            FROM sessions 
+            WHERE email_address = %s AND expires_at > NOW() AND is_active = TRUE
+            ORDER BY created_at DESC 
+            LIMIT 1
+        ''', (email_address,))
+        
+        active_session = c.fetchone()
+        
+        if active_session:
+            active_session_token = active_session[0]
             
-            const randomUsername = generateRandomUsername();
-            document.getElementById('username-input').value = randomUsername;
-            
-            setTimeout(() => {
-                createEmail(randomUsername);
-            }, 10);
-        }
-    });
-    
-    // Copy button
-    document.getElementById('copy-btn').addEventListener('click', function() {
-        if (!currentEmail) {
-            showNotification('❌ No email to copy', 'error');
-            return;
-        }
-        
-        navigator.clipboard.writeText(currentEmail).then(function() {
-            showNotification('✅ Email copied to clipboard', 'success');
-        }).catch(function() {
-            const textArea = document.createElement('textarea');
-            textArea.value = currentEmail;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textArea);
-            showNotification('✅ Email copied to clipboard', 'success');
-        });
-    });
-    
-    // End session button
-    document.getElementById('end-session-btn').addEventListener('click', function() {
-        showModal(
-            'End Session',
-            'Are you sure you want to end this session? All emails will be cleared.',
-            function() {
-                console.log('🎯 User confirmed session end');
-                endSession();
-            }
-        );
-    });
-
-    // ✅ ACCESS BUTTON - This was missing!
-    document.getElementById('access-door-btn').addEventListener('click', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        console.log('🔑 Access door button clicked');
-        openAccessModal();
-    });
-
-    // Refresh button
-    document.getElementById('refresh-btn').addEventListener('click', function() {
-        if (currentEmail && sessionToken) {
-            loadEmails();
-            showNotification('🔄 Refreshing inbox...', 'info');
-        } else {
-            showNotification('❌ No active session', 'error');
-        }
-    });
-    
-    // Back to list button (mobile)
-    document.getElementById('back-to-list').addEventListener('click', function() {
-        showEmailList();
-    });
-    
-    // Clear username error when typing
-    document.getElementById('username-input').addEventListener('input', function() {
-        this.classList.remove('border-red-500');
-    });
-    
-    // Admin mode keyboard shortcut (Ctrl+Alt+A)
-    document.addEventListener('keydown', function(e) {
-        if (e.ctrlKey && e.altKey && e.key === 'a') {
-            e.preventDefault();
-            toggleAdminMode();
-        }
-    });
-    
-    // Handle page visibility changes
-    document.addEventListener('visibilitychange', function() {
-        if (!document.hidden && currentEmail) {
-            loadEmails();
-        }
-    });
-
-    // ✅ AMMZ DOOR Setup - This was also missing!
-    setupAMMZDoor();
-}
-
-function endSessionForNewEmail() {
-    return new Promise((resolve, reject) => {
-        console.log('🔄 Ending session for new email creation...');
-        
-        // Save current session data for backend call
-        const endEmail = currentEmail;
-        const endToken = sessionToken;
-
-        // Clear frontend state immediately
-        currentEmail = '';
-        sessionToken = '';
-        sessionStartTime = null;
-        
-        // Clear localStorage
-        localStorage.removeItem('tempMailSession');
-        
-        // Stop all refresh intervals
-        if (autoRefreshInterval) {
-            clearInterval(autoRefreshInterval);
-            autoRefreshInterval = null;
-        }
-        if (timeUpdateInterval) {
-            clearInterval(timeUpdateInterval);
-            timeUpdateInterval = null;
-        }
-        
-        // Clear any session expiration timeout
-        if (window.sessionExpirationTimeout) {
-            clearTimeout(window.sessionExpirationTimeout);
-            window.sessionExpirationTimeout = null;
-        }
-        
-        // Clear any pending email fetch requests
-        if (window.emailFetchController) {
-            window.emailFetchController.abort();
-            window.emailFetchController = null;
-        }
-        
-        // Reset UI immediately
-        document.getElementById('username-input').value = '';
-        document.getElementById('domain-select').selectedIndex = 0;
-        document.getElementById('email-display').classList.add('hidden');
-        document.getElementById('end-session-btn').classList.add('hidden');
-        document.getElementById('email-count').textContent = '0 emails';
-        document.getElementById('email-list').innerHTML = '';
-        document.getElementById('no-emails-default').style.display = 'flex';
-        
-        // Reset email view
-        document.getElementById('desktop-email-placeholder').style.display = 'flex';
-        document.getElementById('desktop-email-content-inner').classList.add('hidden');
-        
-        // Reset title
-        document.title = 'TempMail - AMMZ';
-        
-        console.log('✅ Frontend session cleared for new email');
-
-        // Notify backend to end session
-        if (endEmail && endToken) {
-            console.log('📡 Notifying backend to end previous session...');
-            fetch(API_URL + '/api/session/end', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    session_token: endToken,
-                    email_address: endEmail
+            # If this is the SAME USER trying to recreate their own email
+            if current_session_token and current_session_token == active_session_token:
+                logger.info(f"✅ User recreating their own email: {email_address}")
+                
+                # Update session expiration
+                new_expires_at = datetime.now() + timedelta(hours=1)
+                c.execute('''
+                    UPDATE sessions 
+                    SET expires_at = %s, last_activity = %s
+                    WHERE session_token = %s
+                ''', (new_expires_at, datetime.now(), active_session_token))
+                
+                conn.commit()
+                conn.close()
+                
+                return jsonify({
+                    'email': email_address,
+                    'session_token': active_session_token,
+                    'expires_at': new_expires_at.isoformat(),
+                    'existing_session': True
                 })
+            else:
+                # Different user trying to use this email - reject
+                conn.close()
+                return jsonify({
+                    'error': 'This email address is currently in use by another session. Please choose a different username or try again later.',
+                    'code': 'EMAIL_IN_USE_ACTIVE'
+                }), 409
+        
+        # Create session token
+        session_token = secrets.token_urlsafe(32)
+        created_at = datetime.now()
+        expires_at = created_at + timedelta(hours=1)
+        
+        is_admin = admin_mode if 'admin_mode' in locals() else False
+
+        c.execute('''
+            INSERT INTO sessions (session_token, email_address, created_at, expires_at, last_activity, is_active, is_admin_session)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (session_token, email_address, created_at, expires_at, created_at, True, is_admin))
+
+        if device_id:
+            user_agent = request.headers.get('User-Agent', '')
+            ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
+            track_device_session(device_id, email_address, session_token, user_agent, ip_address)
+            logger.info(f"📱 Device session tracked: {device_id} -> {email_address}")
+        
+        # If admin mode is enabled, automatically add to blacklist
+        if admin_mode and custom_name:
+            try:
+                c.execute('''
+                    INSERT INTO blacklist (username, added_at, added_by) 
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (username) DO NOTHING
+                ''', (username.lower(), datetime.now(), 'admin_auto'))
+                logger.info(f"✅ Automatically blacklisted username: {username}")
+            except Exception as e:
+                logger.error(f"Error auto-blacklisting username: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Created email: {email_address}")
+        
+        return jsonify({
+            'email': email_address,
+            'session_token': session_token,
+            'expires_at': expires_at.isoformat(),
+            'existing_session': False,
+            'device_tracked': bool(device_id)  # ✅ Confirm device tracking
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error creating email: {e}")
+        return jsonify({'error': 'Failed to create session', 'code': 'SERVER_ERROR'}), 500
+    
+@app.route('/api/admin/banned-devices', methods=['GET'])
+@admin_required
+def get_banned_devices():
+    """Get all banned devices"""
+    try:
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        c.execute('''
+            SELECT device_id, banned_at, banned_by, reason, is_active
+            FROM banned_devices
+            ORDER BY banned_at DESC
+        ''')
+        
+        devices = []
+        for row in c.fetchall():
+            devices.append({
+                'device_id': row['device_id'],
+                'banned_at': row['banned_at'].isoformat(),
+                'banned_by': row['banned_by'],
+                'reason': row['reason'],
+                'is_active': row['is_active']
             })
-            .then(res => {
-                if (!res.ok) {
-                    console.log('⚠️ Backend session end failed, but continuing');
-                } else {
-                    console.log('✅ Backend session ended');
-                }
-                return res.json();
+        
+        conn.close()
+        return jsonify({'banned_devices': devices})
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting banned devices: {e}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/check-device-ban/<device_id>', methods=['GET'])
+def check_device_ban(device_id):
+    """Check if a device is banned - called on page load"""
+    try:
+        if not device_id:
+            return jsonify({'is_banned': False}), 200
+        
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Check if device is actively banned
+        c.execute('''
+            SELECT reason, is_active, banned_at
+            FROM banned_devices 
+            WHERE device_id = %s AND is_active = TRUE
+        ''', (device_id,))
+        
+        ban_record = c.fetchone()
+        conn.close()
+        
+        if ban_record:
+            logger.info(f"🚫 Banned device detected on page load: {device_id}")
+            return jsonify({
+                'is_banned': True,
+                'reason': ban_record['reason'] or 'Multiple policy violations detected',
+                'banned_at': ban_record['banned_at'].isoformat() if ban_record['banned_at'] else None
+            }), 200
+        
+        return jsonify({'is_banned': False}), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error checking device ban: {e}")
+        return jsonify({'is_banned': False}), 200  # Fail open
+
+
+@app.route('/api/admin/ban-device', methods=['POST'])
+@admin_required
+def ban_device():
+    """Ban a device - allow re-banning already banned devices"""
+    try:
+        data = request.get_json() or {}
+        device_id = data.get('device_id', '').strip()
+        reason = data.get('reason', '').strip()
+        
+        if not device_id:
+            return jsonify({'error': 'Device ID is required'}), 400
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Check if device is already banned
+        c.execute('SELECT id, is_active FROM banned_devices WHERE device_id = %s', (device_id,))
+        existing = c.fetchone()
+        
+        if existing:
+            # Device already exists - just update it to active
+            c.execute('''
+                UPDATE banned_devices
+                SET is_active = TRUE, banned_at = %s, reason = %s
+                WHERE device_id = %s
+            ''', (datetime.now(), reason or 'Admin ban', device_id))
+            
+            logger.info(f"✅ Re-activated ban for device: {device_id}")
+        else:
+            # Insert new ban
+            c.execute('''
+                INSERT INTO banned_devices (device_id, reason, banned_at, is_active)
+                VALUES (%s, %s, %s, TRUE)
+            ''', (device_id, reason or 'Admin ban', datetime.now()))
+            
+            logger.info(f"✅ Banned device: {device_id}")
+        
+        # End all sessions for this device
+        c.execute('''
+            UPDATE sessions
+            SET is_active = FALSE
+            WHERE device_id = %s AND is_active = TRUE
+        ''', (device_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': f'Device {device_id} banned successfully'})
+        
+    except Exception as e:
+        logger.error(f"❌ Error banning device: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/unban-device/<device_id>', methods=['POST'])
+@admin_required
+def unban_device(device_id):
+    """Unban a device - allow unbanning already unbanned devices"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Check if device exists
+        c.execute('SELECT id, is_active FROM banned_devices WHERE device_id = %s', (device_id,))
+        existing = c.fetchone()
+        
+        if not existing:
+            conn.close()
+            return jsonify({'error': 'Device not found in ban list'}), 404
+        
+        # Update to inactive (unbanned)
+        c.execute('''
+            UPDATE banned_devices
+            SET is_active = FALSE
+            WHERE device_id = %s
+        ''', (device_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Unbanned device: {device_id}")
+        return jsonify({'success': True, 'message': f'Device {device_id} unbanned successfully'})
+        
+    except Exception as e:
+        logger.error(f"❌ Error unbanning device: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/device-sessions', methods=['GET'])
+@admin_required
+def get_device_sessions():
+    """Get all device sessions for analytics"""
+    try:
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        c.execute('''
+            SELECT device_id, email_address, created_at, user_agent, ip_address
+            FROM device_sessions
+            ORDER BY created_at DESC
+            LIMIT 100
+        ''')
+        
+        sessions = []
+        for row in c.fetchall():
+            sessions.append({
+                'device_id': row['device_id'],
+                'email_address': row['email_address'],
+                'created_at': row['created_at'].isoformat(),
+                'user_agent': row['user_agent'],
+                'ip_address': row['ip_address']
             })
-            .then(data => {
-                console.log('✅ Backend confirmed session end');
-                resolve(); // Resolve the promise to continue
+        
+        conn.close()
+        return jsonify({'device_sessions': sessions})
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting device sessions: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/session/end', methods=['POST'])
+def end_session():
+    try:
+        data = request.get_json() or {}
+        session_token = data.get('session_token')
+        email_address = data.get('email_address')
+        
+        if not session_token or not email_address:
+            return jsonify({'error': 'Missing session data'}), 400
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        # First check if session exists and if it's an access code session
+        c.execute('''
+            SELECT session_token, is_access_code 
+            FROM sessions 
+            WHERE session_token = %s AND email_address = %s
+        ''', (session_token, email_address))
+        
+        session_exists = c.fetchone()
+        
+        if not session_exists:
+            conn.close()
+            return jsonify({'error': 'Session not found'}), 404
+        
+        session_token_db, is_access_code = session_exists
+        
+        # ✅ FIX: Don't end access code sessions via normal session end
+        if is_access_code:
+            conn.close()
+            return jsonify({'error': 'Cannot end access code sessions via this endpoint'}), 403
+        
+        # Only end normal sessions
+        try:
+            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='sessions' AND column_name='is_active'")
+            has_is_active = c.fetchone() is not None
+            
+            if has_is_active:
+                c.execute('''
+                    UPDATE sessions 
+                    SET is_active = FALSE 
+                    WHERE session_token = %s AND email_address = %s
+                ''', (session_token, email_address))
+            else:
+                c.execute('''
+                    UPDATE sessions 
+                    SET expires_at = NOW()
+                    WHERE session_token = %s AND email_address = %s
+                ''', (session_token, email_address))
+        except Exception as e:
+            logger.warning(f"Error in session end logic: {e}")
+            c.execute('''
+                UPDATE sessions 
+                SET expires_at = NOW()
+                WHERE session_token = %s AND email_address = %s
+            ''', (session_token, email_address))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Normal session ended for: {email_address}")
+        return jsonify({'success': True, 'message': 'Session ended successfully'})
+        
+    except Exception as e:
+        logger.error(f"❌ Error ending session: {e}")
+        return jsonify({'error': 'Failed to end session'}), 500
+
+app.config.update(
+    SECRET_KEY=os.getenv('SECRET_KEY', secrets.token_urlsafe(32)),
+    SESSION_COOKIE_SECURE=False,  # Set to True in production
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=1)
+)
+    
+@app.route('/api/emails/<email_address>', methods=['GET'])
+def get_emails(email_address):
+    """Get emails for a specific email address"""
+    try:
+        session_token = request.headers.get('X-Session-Token', '')
+        
+        # Validate session
+        is_valid, message = validate_session(email_address, session_token)
+        if not is_valid:
+            return jsonify({'error': message}), 403
+        
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Check if this is an access code session
+        c.execute('''
+            SELECT is_access_code, created_at 
+            FROM sessions 
+            WHERE session_token = %s AND email_address = %s
+        ''', (session_token, email_address))
+        
+        session_data = c.fetchone()
+        is_access_code_session = session_data and session_data['is_access_code']
+        session_start_time = session_data['created_at'] if session_data else None
+        
+        if is_access_code_session and session_start_time:
+            # ✅ ACCESS CODE MODE: Only show emails received AFTER session start
+            c.execute('''
+                SELECT id, sender, subject, body, timestamp, received_at
+                FROM emails 
+                WHERE recipient = %s AND session_token = %s
+                AND received_at >= %s
+                ORDER BY received_at DESC
+            ''', (email_address, session_token, session_start_time))
+            logger.info(f"🔐 Access code mode: Showing emails after {session_start_time}")
+        else:
+            # ✅ REGULAR MODE: Show all emails for this session
+            c.execute('''
+                SELECT id, sender, subject, body, timestamp, received_at
+                FROM emails 
+                WHERE recipient = %s AND session_token = %s
+                ORDER BY received_at DESC
+            ''', (email_address, session_token))
+        
+        emails = []
+        for row in c.fetchall():
+            emails.append({
+                'id': row['id'],
+                'sender': row['sender'],
+                'subject': row['subject'],
+                'body': row['body'],
+                'timestamp': row['timestamp'],
+                'received_at': row['received_at'].isoformat() if row['received_at'] else None
             })
-            .catch(err => {
-                console.log('❌ Backend session end error (ignoring):', err);
-                resolve(); // Still resolve to continue creation
-            });
-        } else {
-            // No session to end, just resolve
-            console.log('📭 No backend session to end');
-            resolve();
-        }
-    });
-}
+        
+        conn.close()
+        
+        email_count = len(emails)
+        if is_access_code_session:
+            logger.info(f"🔐 Access code session: Showing {email_count} emails (after {session_start_time})")
+        else:
+            logger.info(f"✅ Regular session: Showing {email_count} emails for {email_address}")
+            
+        return jsonify({'emails': emails})
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting emails: {e}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/debug/test-codes', methods=['POST'])
+def debug_test_codes():
+    """Test code extraction with sample text"""
+    try:
+        data = request.get_json() or {}
+        test_text = data.get('text', '')
+        
+        if not test_text:
+            # Use the actual ChatGPT email format
+            test_text = """
+            Your ChatGPT code is 746300
+            https://cdn.openai.com/API/logo-assets/openai-logo-email-header-2.png
+            Enter this temporary verification code to continue:
+            746300
+            Please ignore this email if this wasn't you trying to create a ChatGPT account.
+            """
+        
+        codes = extract_verification_codes(test_text)
+        
+        return jsonify({
+            'success': True,
+            'input_text': test_text,
+            'codes_found': codes,
+            'patterns_tested': [
+                'Your ChatGPT code is\\s*(\\d{6})',
+                'temporary verification code:\\s*(\\d{6})',
+                'verification code:\\s*(\\d{6})',
+                '\\b(\\d{6})\\b'
+            ]
+        })
+        
+    except Exception as e:
+        logger.error(f"Debug test error: {e}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/admin/debug-session', methods=['GET'])
+def debug_session():
+    """Debug session information"""
+    return jsonify({
+        'session_data': dict(session),
+        'admin_authenticated': session.get('admin_authenticated', False),
+        'session_id': session.sid if hasattr(session, 'sid') else 'no_sid'
+    })
+    
+@app.route('/api/admin/end-sessions/<email_address>', methods=['POST'])
+@admin_required
+def admin_end_sessions(email_address):
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        # End all active sessions for this email address
+        c.execute('''
+            UPDATE sessions 
+            SET is_active = FALSE 
+            WHERE email_address = %s AND is_active = TRUE
+        ''', (email_address,))
+        
+        sessions_ended = c.rowcount
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Admin ended {sessions_ended} sessions for {email_address}")
+        return jsonify({'success': True, 'sessions_ended': sessions_ended})
+        
+    except Exception as e:
+        logger.error(f"❌ Error ending sessions: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/debug/create-test', methods=['POST'])
+def debug_create_test():
+    """Test the create function step by step"""
+    try:
+        data = request.get_json() or {}
+        custom_name = data.get('name', '').strip()
+        admin_mode = data.get('admin_mode', False)
+        
+        steps = []
+        
+        # Step 1: Check custom_name
+        steps.append(f"Step 1 - custom_name: '{custom_name}'")
+        
+        # Step 2: Generate username
+        username = ""
+        if custom_name:
+            username = custom_name.lower()
+            username = ''.join(c for c in username if c.isalnum() or c in '-_')
+            steps.append(f"Step 2 - custom username: '{username}'")
+        else:
+            male_name = random.choice(MALE_NAMES)
+            female_name = random.choice(FEMALE_NAMES)
+            three_digits = ''.join(random.choices(string.digits, k=3))
+            username = f"{male_name}{female_name}{three_digits}"
+            steps.append(f"Step 2 - random username: '{username}'")
+        
+        # Step 3: Create email
+        email_address = f"{username}@{DOMAIN}"
+        steps.append(f"Step 3 - email_address: '{email_address}'")
+        
+        return jsonify({
+            'success': True,
+            'steps': steps,
+            'username': username,
+            'email_address': email_address
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e), 'steps': steps}), 500
+
+@app.route('/api/debug/error-test', methods=['POST'])
+def debug_error_test():
+    """Test if create endpoint works"""
+    try:
+        # Test database connection
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT 1')
+        conn.close()
+        
+        # Test session creation
+        session_token = secrets.token_urlsafe(32)
+        email_address = "test@aungmyomyatzaw.online"
+        
+        return jsonify({
+            'success': True,
+            'database': 'working',
+            'session_token': session_token,
+            'test_email': email_address
+        })
+        
+    except Exception as e:
+        logger.error(f"Debug error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/webhook/inbound', methods=['POST'])
+def webhook_inbound():
+    try:
+        json_data = request.get_json(force=True, silent=True)
+        
+        if not json_data:
+            return jsonify({'error': 'No JSON data'}), 400
+        
+        logger.info("📧 INCOMING EMAIL")
+        
+        recipient = json_data.get('to', 'unknown@unknown.com')
+        sender = json_data.get('from', 'unknown')
+        subject = json_data.get('subject', 'No subject')
+        
+        # Clean sender using new function
+        sender = clean_sender_address(sender)
+        
+        # Get body - try multiple fields
+        body = json_data.get('html_body') or json_data.get('plain_body') or 'No content'
+        
+        # PARSE EMAIL WITH NEW MAIL-PARSER SYSTEM
+        parsed_email = parse_email_with_mailparser(body)
+        display_content = get_display_body(parsed_email)
+        
+        # Use parsed subject if available and better
+        if parsed_email['subject'] and parsed_email['subject'] != 'No subject':
+            subject = parsed_email['subject']
+        
+        recipient = recipient.strip()
+        sender = sender.strip() 
+        subject = subject.strip()
+        
+        logger.info(f"  📨 From: {sender} → {recipient}")
+        logger.info(f"  📝 Subject: {subject}")
+        logger.info(f"  📄 Body: {len(display_content['content'])} chars")
+        if display_content['verification_codes']:
+            logger.info(f"  🔑 Verification codes: {display_content['verification_codes']}")
+        
+        # Store timestamps
+        received_at = datetime.now()
+        original_timestamp = json_data.get('timestamp', received_at.isoformat())
+        
+        # Find active session for this recipient
+        conn = get_db()
+        c = conn.cursor()
+        
+        session_token = None
+        
+        # ✅ FIX: Always try to find an active session, but store email regardless
+        try:
+            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='sessions' AND column_name='is_active'")
+            has_is_active = c.fetchone() is not None
+            
+            if has_is_active:
+                c.execute('''
+                    SELECT session_token 
+                    FROM sessions 
+                    WHERE email_address = %s AND expires_at > NOW() AND is_active = TRUE
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                ''', (recipient,))
+            else:
+                c.execute('''
+                    SELECT session_token 
+                    FROM sessions 
+                    WHERE email_address = %s AND expires_at > NOW()
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                ''', (recipient,))
+        except Exception as e:
+            logger.warning(f"Error finding session: {e}")
+            c.execute('''
+                SELECT session_token 
+                FROM sessions 
+                WHERE email_address = %s AND expires_at > NOW()
+                ORDER BY created_at DESC 
+                LIMIT 1
+            ''', (recipient,))
+        
+        session_data = c.fetchone()
+        
+        if session_data:
+            session_token = session_data[0]
+            logger.info(f"  ✅ Found active session for {recipient}")
+        else:
+            logger.info(f"  ℹ️ No active session found for {recipient}, storing email anyway")
+        
+        # ✅ FIXED: Store email ALWAYS, with or without session_token
+        c.execute('''
+            INSERT INTO emails (recipient, sender, subject, body, timestamp, received_at, session_token)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (recipient, sender, subject, display_content['content'], original_timestamp, received_at, session_token))
+        
+        # Update session last_activity if session exists
+        if session_data:
+            c.execute('''
+                UPDATE sessions 
+                SET last_activity = %s 
+                WHERE session_token = %s
+            ''', (received_at, session_token))
+            logger.info(f"  ✅ Updated session activity for {recipient}")
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Email stored: {sender} → {recipient}")
+        return '', 204
+        
+    except Exception as e:
+        logger.error(f"❌ Webhook error: {e}")
+        return jsonify({'error': str(e)}), 400
+    
+@app.route('/api/debug/email-content', methods=['POST'])
+def debug_email_content():
+    """Debug endpoint to see raw email content"""
+    try:
+        data = request.get_json() or {}
+        raw_email = data.get('raw_email', '')
+        
+        if not raw_email:
+            return jsonify({'error': 'No email content provided'}), 400
+        
+        # Parse the email
+        parsed = parse_email_with_mailparser(raw_email)
+        
+        return jsonify({
+            'success': True,
+            'parsed_data': parsed,
+            'body_length': len(parsed.get('body_plain', '')),
+            'html_length': len(parsed.get('body_html', '')),
+            'codes_found': parsed.get('verification_codes', [])
+        })
+        
+    except Exception as e:
+        logger.error(f"Debug error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def cleanup_expired_sessions():
+    while True:
+        time.sleep(300)  # Every 5 minutes
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            
+            # ONLY clean sessions, NEVER touch emails
+            c.execute("""
+                UPDATE sessions 
+                SET is_active = FALSE 
+                WHERE expires_at < NOW() AND is_active = TRUE
+            """)
+            
+            deleted = c.rowcount
+            conn.commit()
+            conn.close()
+            
+            if deleted > 0:
+                logger.info(f"ðŸ”„ Deactivated {deleted} expired sessions (emails preserved)")
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
+
+# Start cleanup thread
+cleanup_thread = Thread(target=cleanup_expired_sessions, daemon=True)
+cleanup_thread.start()
+
+@app.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    try:
+        data = request.get_json() or {}
+        password = data.get('password', '')
+        
+        logger.info(f"🔐 Admin login attempt received")
+        
+        if password == APP_PASSWORD:
+            session['admin_authenticated'] = True
+            session.permanent = True
+            logger.info("✅ Admin login successful")
+            return jsonify({'success': True})
+        else:
+            logger.warning("❌ Admin login failed - invalid password")
+            return jsonify({'success': False, 'error': 'Invalid password'}), 401
+            
+    except Exception as e:
+        logger.error(f"Admin login error: {e}")
+        return jsonify({'success': False, 'error': 'Server error'}), 500
+
+@app.route('/api/verify-admin', methods=['POST'])
+def verify_admin():
+    """Alternative endpoint for frontend admin verification"""
+    try:
+        data = request.get_json() or {}
+        password = data.get('password', '')
+        
+        if password == APP_PASSWORD:
+            session['admin_authenticated'] = True
+            return jsonify({'success': True})
+        return jsonify({'success': False, 'error': 'Invalid password'}), 401
+        
+    except Exception as e:
+        logger.error(f"Admin verification error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/status', methods=['GET'])
+def admin_status():
+    """Check if user is admin authenticated"""
+    try:
+        # Clear any existing admin session to force fresh login
+        if not session.get('admin_authenticated'):
+            logger.info("🔐 Admin status: Not authenticated - forcing login")
+            return jsonify({'authenticated': False})
+        
+        # For development: Always return false to force login
+        # Comment this out in production
+        logger.info("🔐 Admin status: Clearing session for fresh login")
+        session.pop('admin_authenticated', None)
+        return jsonify({'authenticated': False})
+        
+    except Exception as e:
+        logger.error(f"Admin status error: {e}")
+        return jsonify({'authenticated': False})
+
+@app.route('/api/admin/logout', methods=['POST'])
+@admin_required
+def admin_logout():
+    session.clear()
+    return jsonify({'success': True})
+
+@app.route('/api/admin/stats', methods=['GET'])
+@admin_required
+def admin_stats():
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        c.execute('SELECT COUNT(*) FROM emails')
+        total_emails = c.fetchone()[0]
+        
+        c.execute('SELECT COUNT(DISTINCT recipient) FROM emails')
+        total_addresses = c.fetchone()[0]
+        
+        c.execute('''
+            SELECT COUNT(*) FROM emails 
+            WHERE received_at > NOW() - INTERVAL '1 day'
+        ''')
+        recent_emails = c.fetchone()[0]
+        
+        conn.close()
+        
+        return jsonify({
+            'total_emails': total_emails,
+            'total_addresses': total_addresses,
+            'recent_emails': recent_emails
+        })
+        
+    except Exception as e:
+        logger.error(f"âŒ Admin stats error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/addresses', methods=['GET'])
+@admin_required
+def admin_addresses():
+    try:
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # ✅ FIX: Get ALL addresses with access code information
+        c.execute('''
+            SELECT 
+                e.recipient as address, 
+                COUNT(*) as count, 
+                MAX(e.received_at) as last_email_time,
+                EXISTS(
+                    SELECT 1 FROM sessions s 
+                    WHERE s.email_address = e.recipient 
+                    AND s.is_access_code = TRUE
+                    AND s.is_active = TRUE
+                    AND s.expires_at > NOW()
+                ) as has_active_access_code,
+                EXISTS(
+                    SELECT 1 FROM access_codes ac 
+                    WHERE ac.email_address = e.recipient 
+                    AND ac.is_active = TRUE
+                    AND ac.expires_at > NOW()
+                    AND ac.used_count < ac.max_uses
+                ) as has_valid_access_code
+            FROM emails e
+            GROUP BY e.recipient
+            ORDER BY MAX(e.received_at) DESC
+        ''')
+        
+        addresses = []
+        for row in c.fetchall():
+            if row['last_email_time']:
+                last_email_time_utc = row['last_email_time']
+                myanmar_offset = timedelta(hours=6, minutes=30)
+                last_email_time_myanmar = last_email_time_utc + myanmar_offset
+                
+                now_utc = datetime.utcnow()
+                now_myanmar = now_utc + myanmar_offset
+                
+                diff = now_myanmar - last_email_time_myanmar
+                
+                seconds = diff.total_seconds()
+                minutes = seconds // 60
+                hours = minutes // 60
+                days = hours // 24
+                
+                if seconds < 60:
+                    last_email_str = 'just now'
+                elif minutes < 60:
+                    last_email_str = f'{int(minutes)}m ago'
+                elif hours < 24:
+                    last_email_str = f'{int(hours)}h ago'
+                elif days < 7:
+                    last_email_str = f'{int(days)}d ago'
+                else:
+                    last_email_str = last_email_time_myanmar.strftime('%b %d, %H:%M')
+            else:
+                last_email_str = 'never'
+                
+            addresses.append({
+                'address': row['address'],
+                'count': row['count'],
+                'last_email': last_email_str,
+                'last_email_time': row['last_email_time'].isoformat() if row['last_email_time'] else None,
+                'has_active_access_code': row['has_active_access_code'],
+                'has_valid_access_code': row['has_valid_access_code']
+            })
+        
+        conn.close()
+        return jsonify({'addresses': addresses})
+        
+    except Exception as e:
+        logger.error(f"❌ Admin addresses error: {e}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/admin/emails/<email_address>', methods=['GET'])
+@admin_required
+def admin_get_emails(email_address):
+    try:
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        c.execute('''
+            SELECT 
+                e.id,
+                e.sender,
+                e.subject,
+                e.body,
+                e.received_at,
+                e.timestamp,
+                COALESCE(s.is_access_code, FALSE) AS is_access_code,
+                COALESCE(s.is_admin_session, FALSE) AS is_admin_session,
+                s.session_token,
+                ac.code AS access_code,
+                ac.description AS access_code_description
+            FROM emails e
+            LEFT JOIN sessions s ON e.session_token = s.session_token
+            LEFT JOIN access_codes ac ON s.session_token LIKE CONCAT(ac.code, '%%')
+            WHERE e.recipient = %s
+            ORDER BY e.received_at DESC
+        ''', (email_address,))
+        
+        emails = []
+        myanmar_offset = timedelta(hours=6, minutes=30)
+        
+        for row in c.fetchall():
+            if not isinstance(row, dict):
+                logger.error(f"Unexpected row format: {row}")
+                continue
+            
+            # Convert received_at to Myanmar time for display
+            if row.get('received_at'):
+                received_at_myanmar = row['received_at'] + myanmar_offset
+                now_utc = datetime.utcnow()
+                now_myanmar = now_utc + myanmar_offset
+                
+                diff = now_myanmar - received_at_myanmar
+                
+                seconds = diff.total_seconds()
+                minutes = seconds // 60
+                hours = minutes // 60
+                days = hours // 24
+                
+                if seconds < 60:
+                    display_time = 'just now'
+                elif minutes < 60:
+                    display_time = f'{int(minutes)}m ago'
+                elif hours < 24:
+                    display_time = f'{int(hours)}h ago'
+                elif days < 7:
+                    display_time = f'{int(days)}d ago'
+                else:
+                    display_time = received_at_myanmar.strftime('%b %d, %H:%M')
+            else:
+                display_time = 'unknown'
+            
+            email_data = {
+                'id': row.get('id'),
+                'sender': row.get('sender', ''),
+                'subject': row.get('subject', ''),
+                'body': row.get('body', ''),
+                'received_at': row['received_at'].isoformat() if row.get('received_at') else None,
+                'timestamp': row.get('timestamp'),
+                'display_time': display_time,
+                'is_access_code': row.get('is_access_code', False),
+                'is_admin_session': row.get('is_admin_session', False),
+                'access_code': row.get('access_code'),
+                'access_code_description': row.get('access_code_description')
+            }
+            emails.append(email_data)
+        
+        conn.close()
+        return jsonify({'emails': emails})
+        
+    except Exception as e:
+        logger.error(f"❌ Admin get emails error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())  # ✅ Added for better debugging
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/delete/<int:email_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_email(email_id):
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('DELETE FROM emails WHERE id = %s', (email_id,))  # ðŸš¨ DELETES EMAIL
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"âŒ Admin delete email error: {e}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/admin/access-codes/generate', methods=['POST'])
+@admin_required
+def generate_access_code():
+    try:
+        data = request.get_json() or {}
+        username = data.get('username', '').strip().lower()
+        domain = data.get('domain', DOMAIN).strip()
+        custom_code = data.get('custom_code', '').strip().upper()
+        duration_minutes = data.get('duration_minutes', 1440)
+        max_uses = data.get('max_uses', 1)
+        description = data.get('description', '').strip()
+        
+        if not username:
+            return jsonify({'error': 'Username is required'}), 400
+        
+        # Clean username
+        username = ''.join(c for c in username if c.isalnum() or c in '-_')
+        if not username:
+            return jsonify({'error': 'Invalid username format'}), 400
+        
+        email_address = f"{username}@{domain}"
+        
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor) 
+        
+        # Check for ACTIVE sessions only
+        c.execute('''
+            SELECT session_token, is_access_code, expires_at
+            FROM sessions 
+            WHERE email_address = %s AND is_active = TRUE AND expires_at > NOW()
+            ORDER BY created_at DESC 
+            LIMIT 1
+        ''', (email_address,))
+        
+        active_session = c.fetchone()
+        
+        if active_session:
+            session_token, is_access_code, expires_at = active_session
+            
+            if is_access_code:
+                # Check if the access code is still valid
+                c.execute('''
+                    SELECT ac.expires_at, ac.used_count, ac.max_uses, ac.is_active
+                    FROM access_codes ac
+                    WHERE ac.email_address = %s 
+                    AND ac.code IN (
+                        SELECT SUBSTRING(s.session_token FROM 1 FOR 8) 
+                        FROM sessions s 
+                        WHERE s.session_token = %s AND s.is_access_code = TRUE
+                    )
+                ''', (email_address, session_token))
+                
+                access_code_data = c.fetchone()
+                
+                if access_code_data:
+                    code_expires_at, used_count, max_uses_old, is_active_code = access_code_data
+                    current_time = datetime.now()
+                    
+                    # Only block if access code is ACTIVE and VALID
+                    if is_active_code and current_time <= code_expires_at and used_count < max_uses_old:
+                        conn.close()
+                        return jsonify({
+                            'error': f'Username {username} has an active access code session (expires in {format_future_time(code_expires_at)})'
+                        }), 409
+                    else:
+                        # Access code is expired/used/revoked - end the session
+                        c.execute('''
+                            UPDATE sessions 
+                            SET is_active = FALSE 
+                            WHERE session_token = %s
+                        ''', (session_token,))
+                        logger.info(f"✅ Ended expired access code session for {email_address}")
+                else:
+                    # No access code found but session exists - block
+                    conn.close()
+                    return jsonify({'error': f'Username {username} has an active session'}), 409
+            else:
+                # Regular session (not access code) - block
+                conn.close()
+                return jsonify({'error': f'Username {username} has an active regular session'}), 409
+        
+        # Handle custom code or generate random
+        if custom_code:
+            if not re.match(r'^[A-Z0-9]{4,12}$', custom_code):
+                conn.close()
+                return jsonify({'error': 'Custom code must be 4-12 uppercase letters and numbers only'}), 400
+            code = custom_code
+        else:
+            # Generate random code
+            code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        
+        created_at = datetime.now()
+        expires_at = created_at + timedelta(minutes=duration_minutes)
+        
+        try:
+            # ✅ FIX: Try to insert, handle duplicate constraint
+            c.execute('''
+                INSERT INTO access_codes (code, email_address, description, created_at, expires_at, max_uses)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (code, email_address, description, created_at, expires_at, max_uses))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Access code generated: {code} for {email_address} - {description}")
+            
+            return jsonify({
+                'success': True,
+                'code': code,
+                'email_address': email_address,
+                'description': description,
+                'expires_at': expires_at.isoformat(),
+                'max_uses': max_uses,
+                'duration_minutes': duration_minutes
+            })
+            
+        except psycopg2.IntegrityError as e:
+            # ✅ FIX: Handle duplicate code constraint
+            conn.rollback()
+            
+            if 'access_codes_code_key' in str(e):
+            # Check if the existing code is expired/revoked and can be deleted
+                c.execute('''
+                    SELECT code, expires_at, is_active 
+                    FROM access_codes 
+                    WHERE code = %s
+                ''', (code,))
+                
+                existing = c.fetchone()
+                
+                if existing:
+                    # Check if it's expired or revoked
+                    is_expired = existing['expires_at'] < datetime.now()
+                    is_active_code = existing.get('is_active', True)
+                    
+                    if is_expired or not is_active_code:
+                        # Delete the old code and create new one
+                        logger.info(f"♻️ Reusing expired/revoked code: {code}")
+                        c.execute('DELETE FROM access_codes WHERE code = %s', (code,))
+                        
+                        # Now insert the new one
+                        c.execute('''
+                            INSERT INTO access_codes (code, email_address, description, created_at, expires_at, max_uses)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        ''', (code, email_address, description, created_at, expires_at, max_uses))
+                        
+                        conn.commit()
+                        conn.close()
+                        
+                        return jsonify({
+                            'success': True,
+                            'code': code,
+                            'email_address': email_address,
+                            'description': description,
+                            'expires_at': expires_at.isoformat(),
+                            'max_uses': max_uses,
+                            'duration_minutes': duration_minutes
+                        })
+            
+            # If still active, return error
+            conn.close()
+            logger.warning(f"⚠️ Custom code already exists and is active: {code}")
+            return jsonify({
+                'error': f'Custom code "{code}" is already in use and still active. Please choose a different code or wait for it to expire.'
+            }), 409
+        else:
+            conn.close()
+            raise e
+        
+    except Exception as e:
+        logger.error(f"❌ Error generating access code: {e}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/access-codes/redeem', methods=['POST'])
+def redeem_access_code():
+    """Redeem an access code to get temporary access to specific email"""
+    try:
+        data = request.get_json() or {}
+        code = data.get('code', '').strip().upper()
+        device_id = data.get('device_id', '')
+        
+        if not code:
+            return jsonify({'error': 'Access code is required'}), 400
+        
+        if device_id and is_device_banned(device_id):
+            logger.warning(f"🚫 Banned device attempted access: {device_id}")
+            return jsonify({
+                'error': 'ACCESS_DENIED_DEVICE_BANNED',
+                'message': 'Your device has been banned from using this service.'
+            }), 403
+        
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Check if code exists and is valid
+        c.execute('''
+            SELECT code, email_address, description, created_at, expires_at, is_active, used_count, max_uses
+            FROM access_codes
+            WHERE code = %s
+        ''', (code,))
+        
+        access_code = c.fetchone()
+        
+        if not access_code:
+            conn.close()
+            return jsonify({'error': 'Invalid access code'}), 404
+        
+        # Validate code
+        if not access_code['is_active']:
+            conn.close()
+            return jsonify({'error': 'ACCESS_CODE_REVOKED'}), 403
+        
+        # Check expiration
+        current_time = datetime.now()
+        if current_time > access_code['expires_at']:
+            conn.close()
+            return jsonify({'error': 'ACCESS_CODE_EXPIRED'}), 403
+
+        # Check usage
+        if access_code['used_count'] >= access_code['max_uses']:
+            conn.close()
+            return jsonify({'error': 'ACCESS_CODE_USED_UP'}), 403
+        
+        email_address = access_code['email_address']
+        
+        # ✅ FIX: Check if there are any ACTIVE sessions for this email
+        c.execute('''
+            SELECT session_token 
+            FROM sessions 
+            WHERE email_address = %s AND is_active = TRUE AND expires_at > NOW()
+        ''', (email_address,))
+        
+        active_session = c.fetchone()
+        
+        if active_session:
+            conn.close()
+            return jsonify({'error': 'Email address is currently in use by an active session'}), 409
+        
+        # ✅ FIX: End any INACTIVE sessions for this email to clean up
+        c.execute('''
+            UPDATE sessions 
+            SET is_active = FALSE 
+            WHERE email_address = %s AND is_active = FALSE
+        ''', (email_address,))
+        
+        # Create new session
+        session_token = secrets.token_urlsafe(32)
+        expires_at = access_code['expires_at']
+        
+        # Insert session with access code flag
+        c.execute('''
+            INSERT INTO sessions (session_token, email_address, created_at, expires_at, last_activity, is_active, is_access_code)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (session_token, email_address, current_time, expires_at, current_time, True, True))
+
+        if device_id:
+            user_agent = request.headers.get('User-Agent', '')
+            ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
+            track_device_session(device_id, email_address, session_token, user_agent, ip_address)
+            logger.info(f"📱 Access code device session tracked: {device_id} -> {email_address}")
+        
+        # Update access code usage count
+        c.execute('''
+            UPDATE access_codes
+            SET used_count = used_count + 1
+            WHERE code = %s
+        ''', (code,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Access code redeemed: {code} for {email_address} by device {device_id}")
+        
+        return jsonify({
+            'success': True,
+            'email': email_address,
+            'session_token': session_token,
+            'access_start_time': current_time.isoformat(),
+            'expires_at': expires_at.isoformat(),
+            'description': access_code['description'],
+            'code': code,
+            'device_tracked': bool(device_id)
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error redeeming access code: {e}")
+        return jsonify({'error': 'Server error while processing access code'}), 500
+
+@app.route('/api/admin/access-codes', methods=['GET'])
+@admin_required
+def get_access_codes():
+    try:
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        c.execute('''
+            SELECT code, email_address, description, created_at, expires_at, used_count, max_uses, is_active
+            FROM access_codes
+            ORDER BY created_at DESC
+        ''')
+                
+        codes = []
+        current_time = datetime.now()
+        for row in c.fetchall():
+            expires_at = row['expires_at']
+            is_expired = current_time > expires_at
+            is_used_up = row['used_count'] >= row['max_uses']
+            is_revoked = not row['is_active']
+            
+            codes.append({
+                'code': row['code'],
+                'email_address': row['email_address'],
+                'description': row['description'],
+                'created_at': row['created_at'].isoformat(),
+                'expires_at': expires_at.isoformat(),
+                'used_count': row['used_count'],
+                'max_uses': row['max_uses'],
+                'is_active': row['is_active'],
+                'is_expired': is_expired,
+                'is_used_up': is_used_up,
+                'is_revoked': is_revoked,
+                'remaining_uses': max(0, row['max_uses'] - row['used_count']),
+                'time_remaining': format_future_time(expires_at)  # Add this field
+            })
+        
+        conn.close()
+        return jsonify({'access_codes': codes})
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting access codes: {e}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/admin/access-codes/<code>/revoke', methods=['POST'])
+@admin_required
+def revoke_access_code(code):
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Check if code exists
+        c.execute('SELECT code, email_address FROM access_codes WHERE code = %s', (code,))
+        code_data = c.fetchone()
+        
+        if not code_data:
+            conn.close()
+            return jsonify({'error': 'Access code not found'}), 404
+        
+        email_address = code_data[1]
+        
+        # Revoke the code
+        c.execute('''
+            UPDATE access_codes 
+            SET is_active = FALSE 
+            WHERE code = %s
+        ''', (code,))
+        
+        # ✅ ALSO END ALL ACTIVE SESSIONS USING THIS ACCESS CODE
+        c.execute('''
+            UPDATE sessions 
+            SET is_active = FALSE 
+            WHERE email_address = %s AND is_access_code = TRUE AND is_active = TRUE
+        ''', (email_address,))
+        
+        # ✅ FIX: Also remove from any active access code usage tracking
+        c.execute('''
+            DELETE FROM access_codes 
+            WHERE code = %s AND is_active = FALSE
+        ''', (code,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Access code revoked: {code} and sessions ended for {email_address}")
+        return jsonify({'success': True, 'message': f'Access code {code} revoked and sessions ended'})
+        
+    except Exception as e:
+        logger.error(f"❌ Error revoking access code: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/delete-address/<email_address>', methods=['DELETE'])
+@admin_required
+def admin_delete_address(email_address):
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('DELETE FROM emails WHERE recipient = %s', (email_address,))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"âŒ Admin delete address error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/sessions', methods=['GET'])
+@admin_required
+def admin_get_sessions():
+    """Get all active sessions"""
+    try:
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        c.execute('''
+            SELECT session_token, email_address, created_at, expires_at, last_activity
+            FROM sessions 
+            WHERE expires_at > NOW() AND is_active = TRUE
+            ORDER BY last_activity DESC
+        ''')
+        
+        sessions = []
+        for row in c.fetchall():
+            sessions.append({
+                'session_token': row['session_token'],
+                'email': row['email_address'],
+                'created_at': row['created_at'].isoformat(),
+                'expires_at': row['expires_at'].isoformat(),
+                'last_activity': row['last_activity'].isoformat(),
+                'session_age_minutes': int((datetime.now() - row['created_at']).total_seconds() / 60),
+                'time_remaining_minutes': int((row['expires_at'] - datetime.now()).total_seconds() / 60)
+            })
+        
+        conn.close()
+        return jsonify({'sessions': sessions})
+        
+    except Exception as e:
+        logger.error(f"âŒ Error fetching sessions: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# End session from admin panel
+@app.route('/api/admin/session/<session_token>/end', methods=['POST'])
+@admin_required
+def admin_end_session(session_token):
+    """End a user session from admin panel"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Mark session as inactive
+        c.execute('''
+            UPDATE sessions 
+            SET is_active = FALSE 
+            WHERE session_token = %s
+        ''', (session_token,))
+        
+        if c.rowcount == 0:
+            conn.close()
+            return jsonify({'error': 'Session not found'}), 404
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"âœ… Admin ended session: {session_token}")
+        return jsonify({'success': True, 'message': 'Session ended successfully'})
+        
+    except Exception as e:
+        logger.error(f"âŒ Error ending session from admin: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# Blacklist endpoints with database persistence
+@app.route('/api/admin/blacklist', methods=['GET'])
+@admin_required
+def get_blacklist():
+    """Get current blacklisted usernames from database"""
+    try:
+        conn = get_db()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        c.execute('''
+            SELECT username, added_at, added_by
+            FROM blacklist
+            ORDER BY username
+        ''')
+        
+        blacklist = []
+        for row in c.fetchall():
+            blacklist.append({
+                'username': row['username'],
+                'added_at': row['added_at'].isoformat() if row['added_at'] else None,
+                'added_by': row['added_by']
+            })
+        
+        conn.close()
+        return jsonify({'blacklist': blacklist})
+    except Exception as e:
+        logger.error(f"âŒ Error getting blacklist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/blacklist', methods=['POST'])
+@admin_required
+def add_to_blacklist():
+    """Add username to blacklist in database"""
+    try:
+        data = request.get_json() or {}
+        username = data.get('username', '').strip().lower()
+        
+        if not username:
+            return jsonify({'error': 'Username is required'}), 400
+        
+        if not re.match(r'^[a-zA-Z0-9-_]+$', username):
+            return jsonify({'error': 'Username can only contain letters, numbers, hyphens, and underscores'}), 400
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        try:
+            c.execute('''
+                INSERT INTO blacklist (username, added_at, added_by) 
+                VALUES (%s, %s, %s)
+            ''', (username, datetime.now(), 'admin_manual'))
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"âœ… Added to blacklist: {username}")
+            return jsonify({'success': True, 'message': f'Username {username} added to blacklist'})
+            
+        except psycopg2.IntegrityError:
+            conn.close()
+            return jsonify({'error': 'Username already in blacklist'}), 409
+        
+    except Exception as e:
+        logger.error(f"âŒ Error adding to blacklist: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/blacklist/<username>', methods=['DELETE'])
+@admin_required
+def remove_from_blacklist(username):
+    """Remove username from blacklist in database"""
+    try:
+        username = username.lower()
+        
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('DELETE FROM blacklist WHERE username = %s', (username,))
+        
+        if c.rowcount == 0:
+            conn.close()
+            return jsonify({'error': 'Username not found in blacklist'}), 404
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"âœ… Removed from blacklist: {username}")
+        return jsonify({'success': True, 'message': f'Username {username} removed from blacklist'})
+        
+    except Exception as e:
+        logger.error(f"âŒ Error removing from blacklist: {e}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/admin/clear-sessions', methods=['POST'])
+@admin_required
+def admin_clear_sessions():
+    """Clear all admin-related sessions"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        # End all active sessions for admin usernames
+        admin_usernames = ['ammz', 'admin', 'owner', 'root', 'system', 'az', 'c']
+        
+        for username in admin_usernames:
+            email_pattern = f"{username}@%"
+            try:
+                c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='sessions' AND column_name='is_active'")
+                has_is_active = c.fetchone() is not None
+                
+                if has_is_active:
+                    c.execute('''
+                        UPDATE sessions 
+                        SET is_active = FALSE 
+                        WHERE email_address LIKE %s AND is_active = TRUE
+                    ''', (email_pattern,))
+                else:
+                    c.execute('''
+                        UPDATE sessions 
+                        SET expires_at = NOW()
+                        WHERE email_address LIKE %s AND expires_at > NOW()
+                    ''', (email_pattern,))
+            except Exception as e:
+                logger.warning(f"Error clearing admin session for {username}: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info("âœ… All admin sessions cleared")
+        return jsonify({'success': True, 'message': 'Admin sessions cleared'})
+        
+    except Exception as e:
+        logger.error(f"âŒ Error clearing admin sessions: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def migrate_existing_emails():
+    """Migrate existing emails to ensure all emails for same address are grouped"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Find emails with NULL session_token and try to associate them with sessions
+        c.execute('''
+            UPDATE emails e
+            SET session_token = (
+                SELECT s.session_token 
+                FROM sessions s 
+                WHERE s.email_address = e.recipient 
+                AND s.created_at <= e.received_at 
+                AND s.expires_at >= e.received_at
+                ORDER BY s.created_at DESC 
+                LIMIT 1
+            )
+            WHERE e.session_token IS NULL
+        ''')
+        
+        updated_count = c.rowcount
+        conn.commit()
+        conn.close()
+        
+        if updated_count > 0:
+            logger.info(f"✅ Migrated {updated_count} emails to proper session association")
+        
+    except Exception as e:
+        logger.warning(f"Migration note: {e}")
+
+
+
+# Fix admin session configuration
+@app.before_request
+def make_session_permanent():
+    session.permanent = True
+    app.permanent_session_lifetime = timedelta(hours=1)
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Resource not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/health')
+def health():
+    return jsonify({
+        'status': 'healthy',
+        'domain': DOMAIN,
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+
+
+with app.app_context():
+    try:
+        init_db()
+        logger.info("✅ Database initialized successfully on startup")
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed on startup: {e}")
+
+# Create indexes on first run
+def create_indexes_if_needed():
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Add indexes (IF NOT EXISTS = safe to run multiple times)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_sessions_lookup ON sessions(email_address, expires_at, is_active)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_emails_recipient ON emails(recipient, received_at DESC)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_access_codes_code ON access_codes(code)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_username ON blacklist(username)")
+        
+        conn.commit()
+        conn.close()
+        logger.info("✅ Database indexes ready")
+    except Exception as e:
+        logger.error(f"⚠️ Index creation: {e}")
+
+# Run on startup
+create_indexes_if_needed()
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 5000))
+    debug = os.getenv('FLASK_ENV') == 'development'
+    app.run(host='0.0.0.0', port=port, debug=debug)
