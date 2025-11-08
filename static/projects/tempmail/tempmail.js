@@ -1274,6 +1274,13 @@ function continueEmailCreation(customName, btn ,deviceId) {
     })
     .catch(err => {
         console.error('Error creating email:', err);
+        
+        // ✅ CHECK FOR DEVICE BAN ERROR
+        if (err.message && err.message.includes('device has been banned')) {
+            showBannedScreen();
+            return;
+        }
+        
         handleCreateError(err);
     })
     .finally(() => {
@@ -1970,8 +1977,7 @@ function redeemAccessCodeFromModal() {
     })
     .catch(err => {
         console.error('Error redeeming access code:', err);
-        
-        // ✅ FIX: Better error messages for different scenarios
+
         let errorMessage = err.message || 'Network error - please try again';
         if (err.message.includes('ACCESS_CODE_REVOKED')) {
             errorMessage = 'This access code has been revoked by admin';
@@ -1983,7 +1989,8 @@ function redeemAccessCodeFromModal() {
             errorMessage = 'This email address is currently in use by another session';
         }else if (err.message.includes('ACCESS_DENIED_DEVICE_BANNED')) {
             errorMessage = 'Your device has been banned from using this service';
-            showBannedScreen(); // Show banned screen
+            showBannedScreen();
+            return // Show banned screen
         }
         
         showAccessModalResult(`❌ ${errorMessage}`, 'error');
