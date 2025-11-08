@@ -73,7 +73,7 @@ function showBannedScreen(reason = 'Multiple policy violations detected') {
                     </svg>
                     Ban Reason
                 </div>
-                <div class="reason-text">${reason}</div>  <!-- ✅ Make sure this uses the reason parameter -->
+                <div class="reason-text">${reason}</div> 
             </div>
             
             <!-- ... rest of code ... -->
