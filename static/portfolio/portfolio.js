@@ -922,27 +922,10 @@ function navigate(direction) {
 
   updatePosition();
   updateMinimap(currentX, currentY);
-  setTimeout(updateVisibleSection, 50);
   if (currentX === -1 && currentY === 1) initSnakeGame();
   if (currentX === -2 && currentY === 1) initTicTacToe();
   if (currentX === -3 && currentY === 1) initMemoryGame();
 }
-
-document.querySelectorAll('.nav-arrow, .minimap-cell').forEach(btn => {
-  btn.addEventListener('click', () => {
-    setTimeout(updateVisibleSection, 100);
-  });
-});
-
-// Detect if home is initial view
-window.addEventListener('DOMContentLoaded', () => {
-  // Start animations only if on home
-  if (currentX === 0 && currentY === 0) {
-    startHomeAnimations();
-    isHomeVisible = true;
-  }
-});
-
 
 
 navArrows.forEach(arrow => {
@@ -2040,53 +2023,5 @@ document.addEventListener('touchend', (e) => {
 
 setupMobileGameButtons();
 
-function updateVisibleSection() {
-  const container = document.getElementById('sections-container');
-  if (!container) return;
-  const isOnHome = currentX === 0 && currentY === 0;
-  
-  if (isOnHome && !isHomeVisible) {
-    startHomeAnimations();
-    isHomeVisible = true;
-  } else if (!isOnHome && isHomeVisible) {
-    stopHomeAnimations();
-    isHomeVisible = false;
-  }
-}
-
-function startHomeAnimations() {
-  const canvas3D = document.getElementById('canvas-3d');
-  const matrixCanvas = document.getElementById('matrix-canvas');
-
-  if (canvas3D) {
-    canvas3D.style.display = 'block';
-    canvas3D.style.opacity = '1';
-  }
-  if (matrixCanvas) {
-    matrixCanvas.style.display = 'block';
-    matrixCanvas.style.opacity = '1';
-  }
-    if (!mainAnimationId) {
-    animate();
-  }
-  if (!matrixAnimationId) {
-    matrixAnimationId = requestAnimationFrame(drawMatrix);
-  }
-}
-
-function stopHomeAnimations() {
-  const canvas3D = document.getElementById('canvas-3d');
-  const matrixCanvas = document.getElementById('matrix-canvas');
-  
-  if (canvas3D) canvas3D.style.opacity = '0';
-  if (matrixCanvas) matrixCanvas.style.opacity = '0';
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-    initCreatorBadge();
-    initSocialLinks();
-});
 
 
-initCreatorBadge();
-initSocialLinks();
