@@ -900,11 +900,7 @@ body {
   will-change: auto;
 }
 
-/* Lazy load canvases */
-#canvas-3d,
-#matrix-canvas {
-  display: none; /* Hidden by default */
-}
+
 
 #home #canvas-3d,
 #home #matrix-canvas {
