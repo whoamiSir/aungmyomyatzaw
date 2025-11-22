@@ -101,7 +101,7 @@ def get_db():
     
     for attempt in range(max_retries):
         try:
-            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            conn = psycopg2.connect(DATABASE_URL, sslmode='prefer')
             return conn
         except psycopg2.OperationalError as e:
             logger.warning(f"Database connection attempt {attempt + 1} failed: {e}")
@@ -2708,3 +2708,4 @@ if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV') == 'development'
     app.run(host='0.0.0.0', port=port, debug=debug)
+
